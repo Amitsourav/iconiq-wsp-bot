@@ -1,0 +1,10 @@
+# Node is pinned here as well as in package.json and .nvmrc.
+#
+# better-sqlite3 ships prebuilt binaries only for current LTS lines. On Node 24
+# there is no prebuild, so npm falls back to compiling from source — which needs
+# Python and a toolchain that the build image does not carry, and the deploy fails.
+#
+# If this ever needs to move to a newer Node, check that better-sqlite3 publishes
+# a prebuild for it first.
+[phases.setup]
+nixPkgs = ["nodejs_22"]

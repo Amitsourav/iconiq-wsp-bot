@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WhatsApp Lead Bot</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-2: #1e222b; --line: #2a2f3a;
+    --text: #e6e8ec; --muted: #9aa3b2; --accent: #25d366; --warn: #f5a524;
+    --danger: #f14747; --radius: 10px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f4f6f8; --panel: #fff; --panel-2: #f0f2f5; --line: #dfe3e8;
+      --text: #14171a; --muted: #5b6472;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; padding: 12px 20px;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 10; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  nav { display: flex; gap: 4px; flex-wrap: wrap; }
+  nav button {
+    background: none; border: 0; color: var(--muted); padding: 6px 12px;
+    border-radius: 6px; cursor: pointer; font-size: 14px;
+  }
+  nav button:hover { background: var(--panel-2); color: var(--text); }
+  nav button.on { background: var(--panel-2); color: var(--text); font-weight: 600; }
+  main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 18px; margin-bottom: 16px;
+  }
+  .card h2 { margin: 0 0 4px; font-size: 15px; }
+  .card p.hint { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .spread { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
+    border-radius: 999px; font-size: 12px; background: var(--panel-2); color: var(--muted);
+  }
+  .pill.ok { background: rgba(37,211,102,.15); color: var(--accent); }
+  .pill.warn { background: rgba(245,165,36,.15); color: var(--warn); }
+  .pill.bad { background: rgba(241,71,71,.15); color: var(--danger); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px;
+       text-transform: uppercase; letter-spacing: .04em; padding: 8px 10px; }
+  td { padding: 10px; border-top: 1px solid var(--line); vertical-align: middle; }
+  .scroll { overflow-x: auto; }
+  input, select, button.btn {
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+    padding: 8px 11px; border-radius: 7px; font-size: 14px; font-family: inherit;
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button.btn { cursor: pointer; }
+  button.btn:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #052e14; font-weight: 600; }
+  button.danger { color: var(--danger); }
+  .switch { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; font-size: 13px; }
+  .switch input { width: 34px; height: 19px; appearance: none; background: var(--line);
+    border-radius: 999px; position: relative; cursor: pointer; transition: background .15s; }
+  .switch input:checked { background: var(--accent); }
+  .switch input::after { content: ''; position: absolute; width: 15px; height: 15px;
+    border-radius: 50%; background: #fff; top: 2px; left: 2px; transition: left .15s; }
+  .switch input:checked::after { left: 17px; }
+  .qr { display: block; margin: 12px auto; border-radius: 8px; background: #fff; padding: 10px; }
+  .code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 30px;
+    letter-spacing: .18em; text-align: center; padding: 16px; background: var(--panel-2);
+    border-radius: 8px; margin: 12px 0; }
+  .log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+    max-height: 460px; overflow: auto; background: var(--panel-2); border-radius: 8px; padding: 12px; }
+  .log div { padding: 1px 0; white-space: pre-wrap; word-break: break-word; }
+  .log .error { color: var(--danger); } .log .warn { color: var(--warn); }
+  .log .info { color: var(--muted); }
+  .empty { color: var(--muted); text-align: center; padding: 32px 12px; font-size: 14px; }
+  .msg { white-space: pre-wrap; font-size: 13px; color: var(--muted); max-width: 380px; }
+  #login { max-width: 340px; margin: 12vh auto; }
+  #login input { width: 100%; margin-bottom: 10px; }
+  #login button { width: 100%; }
+  .err { color: var(--danger); font-size: 13px; min-height: 18px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .stat { background: var(--panel-2); border-radius: 8px; padding: 12px; }
+  .stat b { display: block; font-size: 22px; font-weight: 600; }
+  .stat span { font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div id="login" class="card" hidden>
+  <h2>WhatsApp Lead Bot</h2>
+  <p class="hint">Sign in to manage the bot.</p>
+  <input id="u" placeholder="Username" autocomplete="username">
+  <input id="p" type="password" placeholder="Password" autocomplete="current-password">
+  <button class="btn primary" onclick="login()">Sign in</button>
+  <p class="err" id="loginErr"></p>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <h1>WhatsApp Lead Bot</h1>
+    <nav>
+      <button data-tab="connection" class="on">Connection</button>
+      <button data-tab="groups">Groups</button>
+      <button data-tab="employees">Employees</button>
+      <button data-tab="held">Needs attention</button>
+      <button data-tab="leads">Leads</button>
+      <button data-tab="banks">Bank shares</button>
+      <button data-tab="diagnostics">Diagnostics</button>
+    </nav>
+    <div style="margin-left:auto" class="row">
+      <span id="waPill" class="pill"><span class="dot"></span> …</span>
+      <button class="btn" onclick="logout()">Sign out</button>
+    </div>
+  </header>
+  <main id="view"></main>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let token = localStorage.getItem('token');
+let tab = 'connection';
+let timer = null;
+
+async function api(path, options = {}) {
+  const res = await fetch('/api' + path, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: 'Bearer ' + token } : {}),
+      ...options.headers
+    }
+  });
+  if (res.status === 401) { logout(); throw new Error('Session expired'); }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || 'Request failed');
+  return body;
+}
+
+async function login() {
+  $('#loginErr').textContent = '';
+  try {
+    const r = await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: $('#u').value, password: $('#p').value })
+    });
+    token = r.token;
+    localStorage.setItem('token', token);
+    start();
+  } catch (e) { $('#loginErr').textContent = e.message; }
+}
+
+function logout() {
+  token = null;
+  localStorage.removeItem('token');
+  clearInterval(timer);
+  $('#app').hidden = true;
+  $('#login').hidden = false;
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"]/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+const WA_LABEL = {
+  connected: ['Connected', 'ok'],
+  connecting: ['Connecting…', 'warn'],
+  awaiting_scan: ['Link the number', 'warn'],
+  disconnected: ['Disconnected', 'bad'],
+  logged_out: ['Logged out', 'bad']
+};
+
+async function refreshStatus() {
+  try {
+    const s = await api('/status');
+    const [text, cls] = WA_LABEL[s.whatsapp.state] || [s.whatsapp.state, ''];
+    $('#waPill').className = 'pill ' + cls;
+    $('#waPill').innerHTML = '<span class="dot"></span> ' + esc(text);
+    window.status_ = s;
+    if (tab === 'connection') render();
+    return s;
+  } catch { return null; }
+}
+
+// ---- views ---------------------------------------------------------------
+const views = {
+  async connection() {
+    const s = window.status_ || await api('/status');
+    const w = s.whatsapp;
+    const [label, cls] = WA_LABEL[w.state] || [w.state, ''];
+
+    let linking = '';
+    if (w.state === 'awaiting_scan') {
+      linking = `
+        <div class="card">
+          <h2>Link the WhatsApp number</h2>
+          <p class="hint">On the phone that owns the number:
+             <b>WhatsApp &rarr; Settings &rarr; Linked Devices &rarr; Link a Device</b>.
+             This is a one-time step — the session survives restarts.</p>
+          ${w.pairingCode ? `
+            <p class="hint">Choose <b>“Link with phone number instead”</b> and type this code:</p>
+            <div class="code">${esc(w.pairingCode.match(/.{1,4}/g).join(' '))}</div>` : ''}
+          ${w.qr ? `<img class="qr" src="${w.qr}" width="260" height="260" alt="QR code">` : ''}
+        </div>`;
+    }
+
+    if (w.state === 'logged_out') {
+      linking = `<div class="card"><h2>The number was unlinked</h2>
+        <p class="hint">WhatsApp ended the session. This happens if the device was
+        removed on the phone, or the phone stayed offline for about two weeks.
+        Restart the bot to link again.</p></div>`;
+    }
+
+    return `
+      <div class="card">
+        <div class="spread">
+          <div>
+            <h2>Status</h2>
+            <p class="hint" style="margin:0">
+              ${w.selfPhone ? 'Running as +' + esc(w.selfPhone) : 'Not linked yet'}
+            </p>
+          </div>
+          <span class="pill ${cls}"><span class="dot"></span> ${esc(label)}</span>
+        </div>
+        <div class="grid" style="margin-top:16px">
+          <div class="stat"><b>${s.counts.held}</b><span>Need attention</span></div>
+          <div class="stat"><b>${s.counts.pending}</b><span>Waiting to send</span></div>
+          <div class="stat"><b>${s.crm.users}</b><span>CRM users</span></div>
+          <div class="stat"><b>${s.crm.configured ? 'Yes' : 'No'}</b><span>CRM connected</span></div>
+        </div>
+      </div>
+      ${linking}
+      <div class="card">
+        <div class="spread">
+          <div>
+            <h2>Replies in the group</h2>
+            <p class="hint" style="margin:0">Turn this off to stop the bot posting
+              messages. Leads are still captured either way.</p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" ${s.sendingPaused ? '' : 'checked'}
+                   onchange="toggleSending(this.checked)">
+            <span>${s.sendingPaused ? 'Paused' : 'Active'}</span>
+          </label>
+        </div>
+      </div>`;
+  },
+
+  async groups() {
+    const [{ groups }, { banks }] = await Promise.all([
+      api('/groups'), api('/banks').catch(() => ({ banks: [] }))
+    ]);
+    if (!groups.length) {
+      return `<div class="card"><div class="empty">
+        No groups yet. Link the WhatsApp number first — the groups it belongs to
+        will appear here.</div></div>`;
+    }
+    return `<div class="card">
+      <h2>Groups</h2>
+      <p class="hint">Switch on the groups to watch. <b>In-house</b> groups create
+        CRM leads. <b>Bank</b> groups record which lender a lead was sent to —
+        the bot never posts in those.</p>
+      <div class="scroll"><table>
+        <tr><th>Group</th><th>Watch</th><th>Type</th><th>Bank</th><th>Replies</th></tr>
+        ${groups.map((g) => `<tr>
+          <td>${esc(g.name)}</td>
+          <td><label class="switch"><input type="checkbox" ${g.is_active ? 'checked' : ''}
+              onchange="saveGroup(${g.id},{is_active:this.checked})"></label></td>
+          <td><select onchange="saveGroup(${g.id},{purpose:this.value})">
+            <option value="inhouse" ${g.purpose === 'inhouse' ? 'selected' : ''}>In-house</option>
+            <option value="bank" ${g.purpose === 'bank' ? 'selected' : ''}>Bank</option>
+          </select></td>
+          <td>${g.purpose === 'bank' ? `
+            <select onchange="saveGroup(${g.id},{bank_name:this.value})">
+              <option value="">Choose the bank…</option>
+              ${banks.map((b) => `<option value="${esc(b)}"
+                  ${g.bank_name === b ? 'selected' : ''}>${esc(b)}</option>`).join('')}
+            </select>
+            ${g.bank_name ? '' : '<div class="err">Needed before anything is recorded</div>'}
+          ` : '<span class="pill">—</span>'}</td>
+          <td>${g.purpose === 'bank'
+            ? '<span class="pill">never</span>'
+            : `<label class="switch"><input type="checkbox" ${g.send_enabled ? 'checked' : ''}
+                 onchange="saveGroup(${g.id},{send_enabled:this.checked})"></label>`}</td>
+        </tr>`).join('')}
+      </table></div>
+    </div>`;
+  },
+
+  async employees() {
+    const [{ employees }, { users }] = await Promise.all([
+      api('/employees'), api('/crm/users').catch(() => ({ users: [] }))
+    ]);
+    return `<div class="card">
+      <h2>Employees</h2>
+      <p class="hint">Match each person's WhatsApp number to their CRM account.
+        When an admin tags someone in the group, this is how the bot knows who to
+        assign the lead to. The CRM does not store WhatsApp numbers, so they are
+        entered here.</p>
+      <div class="row" style="margin-bottom:14px">
+        <input id="ePhone" placeholder="WhatsApp number, e.g. 9876543210" style="flex:1;min-width:200px">
+        <select id="eUser" style="flex:1;min-width:200px">
+          <option value="">Choose the CRM account…</option>
+          ${users.map((u) => `<option value="${esc(u.id)}"
+              data-name="${esc(u.full_name)}" data-email="${esc(u.email)}">
+              ${esc(u.full_name)} — ${esc(u.email)}</option>`).join('')}
+        </select>
+        <button class="btn primary" onclick="addEmployee()">Add</button>
+      </div>
+      <p class="err" id="empErr"></p>
+      ${employees.length ? `<div class="scroll"><table>
+        <tr><th>Name</th><th>WhatsApp</th><th>CRM email</th><th></th></tr>
+        ${employees.map((e) => `<tr>
+          <td>${esc(e.name)}</td><td>${esc(e.wa_phone)}</td><td>${esc(e.email || '—')}</td>
+          <td style="text-align:right"><button class="btn danger"
+              onclick="removeEmployee(${e.id})">Remove</button></td>
+        </tr>`).join('')}
+      </table></div>` : '<div class="empty">No employees mapped yet.</div>'}
+    </div>`;
+  },
+
+  async held() {
+    const [{ leads }, { employees }] = await Promise.all([
+      api('/leads/held'), api('/employees')
+    ]);
+    if (!leads.length) {
+      return `<div class="card"><div class="empty">
+        Nothing waiting. Leads the bot could not place on its own appear here.</div></div>`;
+    }
+    const REASON = {
+      no_mention: 'Nobody was tagged',
+      multiple_mentions: 'More than one person tagged',
+      unknown_employee: 'Tagged number is not an employee',
+      no_name: 'No name found'
+    };
+    return `<div class="card">
+      <h2>Needs attention</h2>
+      <p class="hint">These were captured but not sent to the CRM. Nothing is lost —
+        fill in what is missing and they go straight through.</p>
+      <div class="scroll"><table>
+        <tr><th>Why</th><th>Name</th><th>Phone</th><th>Message</th><th>Assign to</th></tr>
+        ${leads.map((l) => `<tr>
+          <td><span class="pill warn">${esc(REASON[l.held_reason] || l.held_reason)}</span></td>
+          <td>${l.name ? esc(l.name)
+            : `<input id="n${l.id}" placeholder="Full name" style="width:150px">`}</td>
+          <td>${esc(l.phone || '—')}</td>
+          <td class="msg">${esc((l.raw_message || '').slice(0, 220))}</td>
+          <td><div class="row">
+            <select id="a${l.id}">
+              ${employees.map((e) => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}
+            </select>
+            <button class="btn primary" onclick="assign(${l.id})">Send</button>
+          </div></td>
+        </tr>`).join('')}
+      </table></div>
+    </div>`;
+  },
+
+  async leads() {
+    const { leads } = await api('/leads?limit=100');
+    if (!leads.length) return '<div class="card"><div class="empty">No leads yet.</div></div>';
+    const PILL = { created: 'ok', existing: 'warn', held: 'warn', failed: 'bad', pending: '' };
+    return `<div class="card">
+      <h2>Recent leads</h2>
+      <div class="scroll"><table>
+        <tr><th>When</th><th>Name</th><th>Phone</th><th>Assigned</th><th>Status</th></tr>
+        ${leads.map((l) => `<tr>
+          <td>${esc(l.created_at)}</td>
+          <td>${esc(l.name || '—')}</td>
+          <td>${esc(l.phone || '—')}</td>
+          <td>${esc(l.employee_name || '—')}</td>
+          <td><span class="pill ${PILL[l.status] || ''}">${esc(l.status)}</span></td>
+        </tr>`).join('')}
+      </table></div>
+    </div>`;
+  },
+
+  async banks() {
+    const { shares } = await api('/bank-shares?limit=100');
+    if (!shares.length) {
+      return `<div class="card"><div class="empty">
+        Nothing yet. When someone shares a lead in a bank group, it appears here.
+      </div></div>`;
+    }
+    const PILL = { recorded: 'ok', unknown: 'warn', failed: 'bad', pending: '' };
+    const LABEL = {
+      recorded: 'recorded', unknown: 'not in CRM', failed: 'failed', pending: 'sending'
+    };
+    return `<div class="card">
+      <h2>Leads shared with banks</h2>
+      <p class="hint">Captured from the bank groups. <b>Not in CRM</b> means the number
+        was shared with a lender but we hold no such lead — your team was told.</p>
+      <div class="scroll"><table>
+        <tr><th>When</th><th>Bank</th><th>Phone</th><th>Shared by</th><th>Group</th><th>Status</th></tr>
+        ${shares.map((s) => `<tr>
+          <td>${esc(s.created_at)}</td>
+          <td>${esc(s.bank_name)}</td>
+          <td>${esc(s.phone)}</td>
+          <td>${esc(s.employee_name || '—')}</td>
+          <td>${esc(s.group_name || '—')}</td>
+          <td><span class="pill ${PILL[s.status] || ''}">${esc(LABEL[s.status] || s.status)}</span></td>
+        </tr>`).join('')}
+      </table></div>
+    </div>`;
+  },
+
+  async diagnostics() {
+    const [{ reasons, recent }, { logs }] = await Promise.all([
+      api('/skipped?limit=60'), api('/logs?limit=200')
+    ]);
+    return `<div class="card">
+      <h2>Messages the bot did not act on</h2>
+      <p class="hint">Everything the bot saw but did not turn into a lead, with the
+        reason. If real leads are being missed, they show up here first.</p>
+      <div class="grid">
+        ${reasons.map((r) => `<div class="stat"><b>${r.count}</b>
+          <span>${esc(r.reason)}</span></div>`).join('') || '<div class="empty">Nothing yet.</div>'}
+      </div>
+      ${recent.length ? `<div class="scroll" style="margin-top:14px"><table>
+        <tr><th>When</th><th>Reason</th><th>Message</th></tr>
+        ${recent.slice(0, 40).map((s) => `<tr>
+          <td>${esc(s.created_at)}</td><td>${esc(s.reason)}</td>
+          <td class="msg">${esc((s.body || '').slice(0, 160))}</td>
+        </tr>`).join('')}
+      </table></div>` : ''}
+    </div>
+    <div class="card">
+      <h2>Log</h2>
+      <div class="log">${logs.map((l) =>
+        `<div class="${esc(l.level)}">${esc(l.timestamp)} ${esc(l.message)}</div>`
+      ).join('')}</div>
+    </div>`;
+  }
+};
+
+// ---- actions -------------------------------------------------------------
+async function saveGroup(id, patch) {
+  await api('/groups/' + id, { method: 'PUT', body: JSON.stringify(patch) });
+  render();
+}
+
+async function toggleSending(active) {
+  await api('/sending/' + (active ? 'resume' : 'pause'), { method: 'POST' });
+  refreshStatus();
+}
+
+async function addEmployee() {
+  const select = $('#eUser');
+  const option = select.selectedOptions[0];
+  $('#empErr').textContent = '';
+  try {
+    if (!select.value) throw new Error('Choose the CRM account for this person');
+    await api('/employees', {
+      method: 'POST',
+      body: JSON.stringify({
+        wa_phone: $('#ePhone').value,
+        crm_profile_id: select.value,
+        name: option.dataset.name,
+        email: option.dataset.email
+      })
+    });
+    render();
+  } catch (e) { $('#empErr').textContent = e.message; }
+}
+
+async function removeEmployee(id) {
+  await api('/employees/' + id, { method: 'DELETE' });
+  render();
+}
+
+async function assign(id) {
+  const name = document.getElementById('n' + id)?.value;
+  try {
+    await api(`/leads/${id}/assign`, {
+      method: 'POST',
+      body: JSON.stringify({ employee_id: document.getElementById('a' + id).value, name })
+    });
+    render();
+  } catch (e) { alert(e.message); }
+}
+
+// ---- shell ---------------------------------------------------------------
+async function render() {
+  try {
+    $('#view').innerHTML = await views[tab]();
+  } catch (e) {
+    $('#view').innerHTML = `<div class="card"><div class="empty">${esc(e.message)}</div></div>`;
+  }
+}
+
+document.querySelectorAll('nav button').forEach((b) => {
+  b.onclick = () => {
+    tab = b.dataset.tab;
+    document.querySelectorAll('nav button').forEach((x) => x.classList.toggle('on', x === b));
+    render();
+  };
+});
+
+function start() {
+  $('#login').hidden = true;
+  $('#app').hidden = false;
+  refreshStatus().then(render);
+  clearInterval(timer);
+  // Poll so the pairing code and connection state stay current without a refresh.
+  timer = setInterval(refreshStatus, 4000);
+}
+
+if (token) start(); else $('#login').hidden = false;
+$('#p')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
+</script>
+</body>
+</html>
