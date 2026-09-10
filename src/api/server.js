@@ -83,6 +83,23 @@ function createServer({ whatsapp, crm, orchestrator, jobs = {} }) {
     });
   });
 
+  /**
+   * Link a different number after WhatsApp ended the session.
+   *
+   * Only reachable once the state is `logged_out` — the client refuses
+   * otherwise, so this can never discard a session that still works.
+   */
+  api.post('/whatsapp/relink', wrap(async (req, res) => {
+    try {
+      const { archivedTo } = await whatsapp.relink();
+      logger.warn(`Relink requested from the admin panel by ${req.user?.username}`);
+      res.json({ ok: true, archivedTo, whatsapp: whatsapp.status() });
+    } catch (error) {
+      // A refusal here is the guard doing its job, not a server fault.
+      res.status(409).json({ error: error.message });
+    }
+  }));
+
   /** Kill switch (S4) — silences replies, never capture. */
   api.post('/sending/:action', (req, res) => {
     const paused = req.params.action === 'pause';

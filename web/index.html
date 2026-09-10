@@ -158,6 +158,29 @@ async function login() {
   } catch (e) { $('#loginErr').textContent = e.message; }
 }
 
+/**
+ * Start a fresh WhatsApp session after the number was unlinked.
+ *
+ * Only offered once WhatsApp has ended the session; the server refuses while a
+ * session still works, so this cannot throw away a live login.
+ */
+async function relink(button) {
+  const err = $('#relinkErr');
+  if (err) err.textContent = '';
+  button.disabled = true;
+  button.textContent = 'Starting…';
+  try {
+    await api('/whatsapp/relink', { method: 'POST' });
+    // The QR arrives a moment after the socket opens, so give it time rather
+    // than showing an empty box.
+    setTimeout(refreshStatus, 2500);
+  } catch (e) {
+    if (err) err.textContent = e.message;
+    button.disabled = false;
+    button.textContent = 'Link a number again';
+  }
+}
+
 function logout() {
   token = null;
   localStorage.removeItem('token');
@@ -216,8 +239,12 @@ const views = {
     if (w.state === 'logged_out') {
       linking = `<div class="card"><h2>The number was unlinked</h2>
         <p class="hint">WhatsApp ended the session. This happens if the device was
-        removed on the phone, or the phone stayed offline for about two weeks.
-        Restart the bot to link again.</p></div>`;
+        removed on the phone, or the phone stayed offline for about two weeks.</p>
+        <p class="hint">Starting again will show a new QR code, so you can link
+        this number or a different one. The old session is kept aside, not
+        deleted.</p>
+        <button class="btn primary" onclick="relink(this)">Link a number again</button>
+        <p class="err" id="relinkErr"></p></div>`;
     }
 
     return `

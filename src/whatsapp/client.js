@@ -258,6 +258,56 @@ class WhatsAppClient extends EventEmitter {
   }
 
   /**
+   * Start over with a fresh QR after WhatsApp ended the session.
+   *
+   * The standing rule is that nothing in this codebase touches the session
+   * directory, because deleting it is what forces a physical rescan. This is the
+   * one deliberate exception, and it is narrow:
+   *
+   *   - It refuses unless WhatsApp itself has declared the session dead
+   *     (`logged_out`). Credentials that still work are never touched.
+   *   - It ARCHIVES rather than deletes, so a session moved aside by mistake can
+   *     be moved back by hand.
+   *   - It only runs when a signed-in operator asks for it in the panel.
+   *
+   * Without this the panel was a dead end: it said "restart the bot to link
+   * again", which needs the hosting dashboard, so whoever was standing there
+   * with the phone could not act on it.
+   *
+   * @returns {Promise<{ archivedTo: string|null }>}
+   */
+  async relink() {
+    if (this.state !== 'logged_out') {
+      throw new Error(
+        `Refusing to relink while the session is "${this.state}". `
+        + 'This is only for a session WhatsApp has already ended.'
+      );
+    }
+
+    const sessionPath = config.whatsapp.sessionPath;
+    let archivedTo = null;
+
+    if (fs.existsSync(sessionPath)) {
+      archivedTo = `${sessionPath}.dead-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      fs.renameSync(sessionPath, archivedTo);
+      logger.warn(`Dead session archived to ${archivedTo}`);
+    }
+
+    try {
+      await this.sock?.end?.();
+    } catch {
+      // The socket is already dead — that is the situation we are recovering from.
+    }
+
+    this.state = 'disconnected';
+    this.reconnectAttempts = 0;
+    logger.info('Starting a fresh session — scan the new QR to link a number');
+
+    await this.connect({});
+    return { archivedTo };
+  }
+
+  /**
    * Ask the phone to replay recent messages for a group.
    *
    * This is the recovery for a gap. WhatsApp will not tell us what we missed, but

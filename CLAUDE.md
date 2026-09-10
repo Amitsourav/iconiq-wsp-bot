@@ -65,6 +65,15 @@ production. It is the WhatsApp login. Deleting it means physically scanning a QR
 again from the phone that owns the number. The old v1 troubleshooting guide told
 people to delete it casually — that advice was wrong and is gone.
 
+There is exactly one exception, `WhatsAppClient.relink()`, and any change to it
+must keep all three of its terms: it refuses unless the state is `logged_out`
+(WhatsApp has already killed the credentials, so there is nothing left to
+protect), it **archives** the folder rather than deleting it, and it runs only
+when someone signed into the panel asks for it. It exists because the panel was
+otherwise a dead end after a logout — it said "restart the bot to link again",
+which needs the hosting dashboard, so the person holding the phone could not act
+on it. Do not widen it into anything that runs automatically.
+
 **Phone number is the identity of a lead.** Indian numbers normalise to
 `+91XXXXXXXXXX`, matching the CRM's own `normalize_phone` so we can predict that
 they will deduplicate. Overseas numbers are accepted only with an explicit `+` and
