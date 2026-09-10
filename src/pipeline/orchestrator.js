@@ -44,6 +44,41 @@ class Orchestrator {
     this.crm = crm;
     this.whatsapp = whatsapp;
     this.bank = new BankHandler({ crm, whatsapp });
+    /** chat id -> the tail of that chat's work queue. See serialise(). */
+    this.chatQueues = new Map();
+  }
+
+  /**
+   * Run work for one chat only after everything already queued for it.
+   *
+   * Handling a message is slow — a model call, then the CRM, then another model
+   * call — and messages arrive on their own schedule. Left concurrent, a second
+   * message that lands mid-flight produces a second reply while the first is
+   * still being sent, and two overlapping sends on one WhatsApp conversation
+   * advance its encryption ratchet out of order. The recipient's phone then
+   * cannot decrypt anything further and shows "Waiting for this message" for
+   * every reply after the first few — which is exactly what was reported.
+   *
+   * Serialising per chat costs nothing: different customers still run in
+   * parallel, and one customer's messages were always going to be answered in
+   * order anyway.
+   *
+   * @private
+   */
+  serialise(key, work) {
+    const previous = this.chatQueues.get(key) || Promise.resolve();
+    // .catch first, so one failed message never blocks the rest of the chat.
+    const run = previous.catch(() => {}).then(work);
+    const tracked = run.catch(() => {});
+
+    this.chatQueues.set(key, tracked);
+    tracked.then(() => {
+      // Only the newest entry may clear it, or a slow message would delete a
+      // queue that a newer one is still using.
+      if (this.chatQueues.get(key) === tracked) this.chatQueues.delete(key);
+    });
+
+    return run;
   }
 
   /**
@@ -52,6 +87,13 @@ class Orchestrator {
    * @param {object} [rawMessage] - the original, needed to quote it in a reply
    */
   async handle(message, rawMessage) {
+    // Same reasoning as DMs: one group's messages are handled one at a time so
+    // two replies can never be sent into it concurrently.
+    return this.serialise(message.groupId, () => this.processGroup(message, rawMessage));
+  }
+
+  /** @private */
+  async processGroup(message, rawMessage) {
     try {
       const group = repo.groups.upsert(message.groupId, message.groupName || message.groupId);
 
@@ -720,6 +762,12 @@ class Orchestrator {
    * later. See pipeline/dmSync.js and the 'dm-crm-sync' scheduled job.
    */
   async handleDirect(message, rawMessage) {
+    // One chat is answered one message at a time — see serialise().
+    return this.serialise(message.chatId, () => this.processDirect(message, rawMessage));
+  }
+
+  /** @private */
+  async processDirect(message, rawMessage) {
     try {
       if (message.fromMe) return;
 
@@ -736,7 +784,17 @@ class Orchestrator {
       // number nobody can call is worse than a lead waiting for one.
       const phone = phoneUtil.fromJidInternational(message.senderPnJid || message.chatId);
       repo.dmThreads.upsert(message.chatId, phone);
-      this.recordDmMessage(message.chatId, 'in', text, message.id);
+
+      // WhatsApp redelivers after a reconnect, and a failed decrypt is retried.
+      // The group pipeline has always stopped here on a message it has already
+      // seen; this path never did, so a replay produced a second reply to the
+      // same message — and two sends the recipient never asked for is one way
+      // the conversation's encryption gets out of step.
+      const fresh = this.recordDmMessage(message.chatId, 'in', text, message.id);
+      if (!fresh) {
+        logger.info(`Ignoring a message we have already answered (${message.id})`);
+        return;
+      }
 
       // Their WhatsApp profile name, so the lead is called something a person
       // recognises rather than its own number. Only ever fills a blank — a name
@@ -921,7 +979,9 @@ class Orchestrator {
    * @private
    */
   recordDmMessage(chatId, direction, body, waMessageId) {
-    repo.dmMessages.create({ waMessageId, chatId, direction, body });
+    // Returns null when this id has been stored before, which is how callers
+    // tell a new message from a redelivery.
+    return repo.dmMessages.create({ waMessageId, chatId, direction, body });
   }
 
   /**

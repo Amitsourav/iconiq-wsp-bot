@@ -482,3 +482,67 @@ describe('a lead is named, not just numbered', () => {
     assert.equal(created[0].full_name, '+919812345111');
   });
 });
+
+describe('one chat is handled one message at a time', () => {
+  const { Orchestrator } = require('../src/pipeline/orchestrator');
+
+  const idleCrm = { configured: false };
+
+  test('a second message waits for the first to finish', async () => {
+    // Overlapping handling meant overlapping sends, and two sends racing on one
+    // conversation put its encryption ratchet out of order — after which the
+    // recipient could not decrypt anything and saw "Waiting for this message".
+    const o = new Orchestrator({ crm: idleCrm, whatsapp: {} });
+    const order = [];
+
+    const slow = o.serialise('chat-a', async () => {
+      order.push('first:start');
+      await new Promise((r) => setTimeout(r, 30));
+      order.push('first:end');
+    });
+    const quick = o.serialise('chat-a', async () => {
+      order.push('second:start');
+    });
+
+    await Promise.all([slow, quick]);
+
+    assert.deepEqual(order, ['first:start', 'first:end', 'second:start']);
+  });
+
+  test('different chats still run at the same time', async () => {
+    const o = new Orchestrator({ crm: idleCrm, whatsapp: {} });
+    const order = [];
+
+    const a = o.serialise('chat-a', async () => {
+      await new Promise((r) => setTimeout(r, 30));
+      order.push('a');
+    });
+    const b = o.serialise('chat-b', async () => {
+      order.push('b');
+    });
+
+    await Promise.all([a, b]);
+
+    // b finished first despite being queued second — one slow customer must not
+    // hold up everyone else.
+    assert.deepEqual(order, ['b', 'a']);
+  });
+
+  test('a failed message does not block the rest of the chat', async () => {
+    const o = new Orchestrator({ crm: idleCrm, whatsapp: {} });
+    let ran = false;
+
+    await o.serialise('chat-c', async () => { throw new Error('boom'); })
+      .catch(() => {});
+    await o.serialise('chat-c', async () => { ran = true; });
+
+    assert.equal(ran, true);
+  });
+
+  test('the queue does not grow forever', async () => {
+    const o = new Orchestrator({ crm: idleCrm, whatsapp: {} });
+    await o.serialise('chat-d', async () => {});
+    await new Promise((r) => setImmediate(r));
+    assert.equal(o.chatQueues.has('chat-d'), false);
+  });
+});
