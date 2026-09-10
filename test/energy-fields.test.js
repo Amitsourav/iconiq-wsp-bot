@@ -302,8 +302,10 @@ describe('LID addressing is never mistaken for a phone number', () => {
 
     assert.equal(message.senderPhone, '+919812345000');
     assert.equal(message.senderPnJid, '919812345000@s.whatsapp.net');
-    // The reply goes to the number, not the LID — a @lid reply can vanish.
-    assert.equal(message.replyTo, '919812345000@s.whatsapp.net');
+    // The reply goes back to the conversation it came from. Answering on the
+    // phone JID instead opens a second encryption session with the same person,
+    // and the recipient can then no longer read anything we send.
+    assert.equal(message.replyTo, '79955161551055@lid');
     // The chat is still identified by its LID, so the thread stays one thread.
     assert.equal(message.chatId, '79955161551055@lid');
   });

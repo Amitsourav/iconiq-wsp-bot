@@ -57,7 +57,22 @@ const config = {
     sessionPath: path.resolve(ROOT, process.env.WA_SESSION_PATH || './.wwebjs_auth'),
     // Chrome needs an explicit binary path on some servers.
     chromePath: process.env.CHROME_PATH || undefined,
-    headless: bool(process.env.WA_HEADLESS, true)
+    headless: bool(process.env.WA_HEADLESS, true),
+
+    /**
+     * Which address a direct chat is answered on.
+     *
+     *   'chat'  the conversation the message arrived on — what WhatsApp itself
+     *           does, and what keeps ONE encryption session per person
+     *   'pn'    the sender's phone JID
+     *
+     * Answering a LID-addressed chat on the phone JID opens a second session
+     * with the same person, and the recipient's phone then cannot decrypt what
+     * we send — that is what "Waiting for this message" is. Kept switchable
+     * because it was briefly 'pn', and being able to put it back without a
+     * deploy is worth more than the tidiness of removing the option.
+     */
+    replyTo: process.env.WA_REPLY_TO === 'pn' ? 'pn' : 'chat'
   },
 
   crm: {

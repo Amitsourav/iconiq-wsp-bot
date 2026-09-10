@@ -5,6 +5,7 @@
  * message shapes without a WhatsApp connection.
  */
 const phone = require('../pipeline/phone');
+const { config } = require('../config');
 
 /**
  * Extract the text body from any message type that carries one.
@@ -95,14 +96,23 @@ function normalise(raw) {
     // Always set, group or DM — identifies the conversation.
     chatId: remoteJid,
     /**
-     * Where a reply is actually addressed.
+     * Where a reply is addressed: the conversation it arrived on.
      *
-     * For a direct chat that arrived over a LID, this is the sender's real
-     * phone JID: a @lid address is newer than the number-based one and does not
-     * route everywhere, so a reply sent to it can vanish without an error.
-     * Groups always reply to the group itself.
+     * This must stay the same address the message came from. WhatsApp keeps one
+     * encryption session per conversation, so answering a LID-addressed chat on
+     * the sender's phone JID instead opens a SECOND session with the same
+     * person — and the recipient's phone then cannot read what we send, which
+     * is what "Waiting for this message" is.
+     *
+     * It was briefly the phone JID, on the belief that LID replies did not
+     * route. That was wrong: replies were disappearing because resolving the
+     * LID blocked for a minute first (see prepareAndEmit), and fixing the real
+     * cause made the reply target moot. `WA_REPLY_TO=pn` restores the old
+     * behaviour without a deploy if this ever turns out to be backwards.
      */
-    replyTo: (!isGroup && senderPnJid) ? senderPnJid : remoteJid,
+    replyTo: (!isGroup && senderPnJid && config.whatsapp.replyTo === 'pn')
+      ? senderPnJid
+      : remoteJid,
     isGroup,
     fromMe: Boolean(raw.key.fromMe),
     senderPhone: phone.fromJid(senderJid),
