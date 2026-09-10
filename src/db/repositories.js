@@ -490,6 +490,22 @@ const dmThreads = {
     return result.changes > 0;
   },
 
+  /**
+   * Let go of a CRM lead that no longer exists.
+   *
+   * Clears the record of which fields were already written along with the id.
+   * They describe what the OLD lead held, and a fresh lead needs them all
+   * again — keeping them would produce a lead with a name and nothing else.
+   */
+  forgetLead(chatId) {
+    get().prepare(`
+      UPDATE dm_threads
+      SET crm_lead_id = NULL, captured = NULL, status = 'pending',
+          updated_at = datetime('now')
+      WHERE chat_id = ?
+    `).run(chatId);
+  },
+
   setCrmLead(chatId, crmLeadId) {
     get().prepare(`
       UPDATE dm_threads SET crm_lead_id = ?, updated_at = datetime('now') WHERE chat_id = ?

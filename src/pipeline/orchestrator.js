@@ -1035,8 +1035,33 @@ class Orchestrator {
     try {
       await pushDmMessages(this.crm, thread, { selfPhone: this.whatsapp?.selfPhone });
     } catch (error) {
+      if (this.forgetDeletedLead(chatId, error)) return;
       logger.warn(`Chat messages not sent to the CRM yet for ${chatId}: ${error.message}`);
     }
+  }
+
+  /**
+   * Let go of a lead that no longer exists in the CRM.
+   *
+   * Someone deleting a lead — a test record, a duplicate, a mistake — leaves us
+   * holding an id that will never resolve again, and every message from that
+   * customer then fails with 404 for as long as the chat lives. Seen live: a
+   * deleted test lead left a real conversation writing into nothing.
+   *
+   * Only a 404 clears it. Any other failure is treated as temporary, because
+   * forgetting a lead that is merely unreachable would create a second one for
+   * the same person the moment the CRM came back.
+   *
+   * @returns {boolean} whether the id was dropped, so the caller can stop
+   * @private
+   */
+  forgetDeletedLead(chatId, error) {
+    if (error?.status !== 404) return false;
+
+    repo.dmThreads.forgetLead(chatId);
+    logger.warn(`The CRM lead for ${chatId} no longer exists — it was deleted. `
+      + 'Forgetting it; the next message creates a fresh one.');
+    return true;
   }
 
   /**
@@ -1088,8 +1113,9 @@ class Orchestrator {
       logger.info(`DM lead ${thread.phone || chatId} updated: `
         + Object.entries(fresh).map(([k, v]) => `${k}=${v}`).join(', '));
     } catch (error) {
-      // Never fatal. The transcript still reaches the CRM as a remark, so the
-      // information survives even when no field was set.
+      // Never fatal. The conversation still reaches the CRM, so the information
+      // survives even when no field was set.
+      if (this.forgetDeletedLead(chatId, error)) return;
       logger.warn(`DM field capture failed for ${chatId}: ${error.message}`);
     }
   }

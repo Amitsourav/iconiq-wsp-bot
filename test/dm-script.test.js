@@ -112,3 +112,79 @@ describe('the fixed enquiry script', () => {
       'their second message should get the closing line, not the greeting again');
   });
 });
+
+describe('a lead deleted in the CRM does not break the chat forever', () => {
+  const CHAT = '79955161551055@lid';
+
+  function fresh() {
+    db.close();
+    for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
+    db.init();
+  }
+
+  test('a 404 makes the bot let go and create a fresh lead', async (t) => {
+    t.after(() => { db.close();
+      for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true }); });
+    fresh();
+
+    const created = [];
+    let leadExists = false;
+    const crm = {
+      configured: true,
+      async findByPhone() { return { status: 'none', lead: null }; },
+      async createLead(f) { created.push(f); leadExists = true; return { lead: { id: 'NEW' }, deferred: {}, dropped: [] }; },
+      async addLeadMessage() {
+        if (!leadExists) {
+          const e = new Error('POST /leads/OLD/messages → 404: Lead not found');
+          e.status = 404;
+          throw e;
+        }
+        return {};
+      },
+      async updateLead() { return { lead: null, dropped: [] }; }
+    };
+    const o = new Orchestrator({ crm, whatsapp: { async reply() { return true; } } });
+
+    // A thread left pointing at a lead someone deleted, with fields it thinks
+    // are already written.
+    repo.dmThreads.upsert(CHAT, '+917004428198');
+    repo.dmThreads.setCrmLead(CHAT, 'OLD');
+    repo.dmThreads.setCaptured(CHAT, { city: 'Patna' });
+    repo.dmMessages.create({ waMessageId: 'k1', chatId: CHAT, direction: 'in', body: 'Hi' });
+
+    await o.syncDmToCrm(CHAT);
+
+    assert.equal(repo.dmThreads.byChatId(CHAT).crm_lead_id, null,
+      'the dead id should have been dropped');
+    assert.deepEqual(repo.dmThreads.captured(CHAT), {},
+      'the fresh lead needs every field written again');
+
+    // The next message rebuilds everything.
+    await o.ensureDmLead(CHAT);
+    await o.syncDmToCrm(CHAT);
+
+    assert.equal(created.length, 1);
+    assert.equal(repo.dmThreads.byChatId(CHAT).crm_lead_id, 'NEW');
+  });
+
+  test('an ordinary failure does NOT throw the lead away', async (t) => {
+    t.after(() => { db.close();
+      for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true }); });
+    fresh();
+
+    const crm = {
+      configured: true,
+      async addLeadMessage() { throw new Error('Network error: fetch failed'); }
+    };
+    const o = new Orchestrator({ crm, whatsapp: { async reply() { return true; } } });
+
+    repo.dmThreads.upsert(CHAT, '+917004428198');
+    repo.dmThreads.setCrmLead(CHAT, 'STILL-THERE');
+    repo.dmMessages.create({ waMessageId: 'k2', chatId: CHAT, direction: 'in', body: 'Hi' });
+
+    await o.syncDmToCrm(CHAT);
+
+    assert.equal(repo.dmThreads.byChatId(CHAT).crm_lead_id, 'STILL-THERE',
+      'an unreachable CRM must not cause a second lead for the same person');
+  });
+});
