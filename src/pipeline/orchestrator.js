@@ -872,8 +872,13 @@ class Orchestrator {
    * @private
    */
   async replyToDm(message, rawMessage, text) {
-    if (!config.ai.enabled || !config.ai.replyInDms) return;
     if (repo.settings.get('sending_paused') === 'true') return;
+
+    if (config.ai.dmMode === 'script') {
+      return this.replyFromScript(message, rawMessage);
+    }
+
+    if (!config.ai.enabled || !config.ai.replyInDms) return;
 
     let answer = await assistant.replyDirect(message.chatId, text);
 
@@ -892,10 +897,16 @@ class Orchestrator {
       logger.warn(`AI unavailable for ${message.chatId} — sent the holding reply`);
     }
 
-    // First contact answers with two messages — the greeting and the details it
-    // asks for — so this takes one or many and sends them in order.
-    const parts = (Array.isArray(answer) ? answer : [answer]).filter(Boolean);
+    await this.sendDmParts(message, rawMessage,
+      (Array.isArray(answer) ? answer : [answer]).filter(Boolean));
+  }
 
+  /**
+   * Send one or more replies to a direct chat, in order, and record them.
+   *
+   * @private
+   */
+  async sendDmParts(message, rawMessage, parts) {
     for (const [index, part] of parts.entries()) {
       const sent = await this.whatsapp.reply({
         // replyTo, not chatId: a chat addressed by LID must be answered on the
@@ -966,6 +977,38 @@ class Orchestrator {
       repo.dmThreads.markFailed(chatId, error.message);
       logger.warn(`DM lead not created yet for ${chatId}: ${error.message}`);
     }
+  }
+
+  /**
+   * The fixed three-message enquiry script.
+   *
+   *   their 1st message  ->  the greeting, then the details to send
+   *   their 2nd message  ->  thanks, a person will be in touch
+   *   after that         ->  nothing
+   *
+   * Silence afterwards is the point. The bot has said everything it can stand
+   * behind, and a customer who keeps writing is now talking to the team — every
+   * word still reaches the CRM, so nothing is lost by not answering. Repeating
+   * the thank-you instead would read as a machine that has stopped listening.
+   *
+   * Which message to send is decided by counting what the customer has actually
+   * sent, read from the database rather than from memory, so a restart in the
+   * middle of an enquiry does not start it again from the greeting.
+   *
+   * @private
+   */
+  async replyFromScript(message, rawMessage) {
+    const inbound = repo.dmMessages
+      .recentForChat(message.chatId, 50)
+      .filter((row) => row.direction === 'in').length;
+
+    const parts = inbound <= 1 ? [assistant.DM_GREETING, assistant.DM_DETAILS_REQUEST]
+      : inbound === 2 ? [assistant.DM_CLOSING]
+        : [];
+
+    if (!parts.length) return;
+
+    await this.sendDmParts(message, rawMessage, parts);
   }
 
   /**

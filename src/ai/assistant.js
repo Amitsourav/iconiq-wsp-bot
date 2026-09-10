@@ -111,6 +111,16 @@ const DM_DETAILS_REQUEST = `Please share:
 3. Company Name -
 4. City -`;
 
+/**
+ * The last thing the bot says, once they have answered.
+ *
+ * Deliberately closes the conversation rather than inviting more. The bot is
+ * not holding a sales conversation yet — it is collecting an enquiry and
+ * handing it to a person — so promising a human is both the honest thing to
+ * say and the end of what it can usefully do alone.
+ */
+const DM_CLOSING = 'Thanks for sharing your details. Our team will get in touch with you.';
+
 /** chatId -> [{role, content}, ...], oldest first. */
 const histories = new Map();
 
@@ -188,4 +198,4 @@ async function replyDirect(chatId, userText) {
   return answer;
 }
 
-module.exports = { reply, replyDirect };
+module.exports = { reply, replyDirect, DM_GREETING, DM_DETAILS_REQUEST, DM_CLOSING };

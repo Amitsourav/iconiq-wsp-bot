@@ -165,6 +165,24 @@ const config = {
     historyTurns: int(process.env.AI_HISTORY_TURNS, 6),
 
     /**
+     * How the bot answers a direct message.
+     *
+     *   'script'  three fixed messages — greeting, the details to send, and a
+     *             thank-you once they reply — then silence. No model call, so
+     *             every conversation is identical, free, and cannot say
+     *             anything nobody approved.
+     *   'ai'      a real conversation, answering questions from the product
+     *             knowledge base and asking for load, backup and existing
+     *             solar or DG.
+     *
+     * Script while the bot is new: an automated sales conversation is a bigger
+     * promise to a customer than an enquiry form, and it should be turned on
+     * deliberately rather than by default. The AI path is kept and tested, so
+     * it is one variable away.
+     */
+    dmMode: (process.env.DM_MODE || 'script').toLowerCase() === 'ai' ? 'ai' : 'script',
+
+    /**
      * Whether a DM conversation is read for lead details (name, city, load,
      * backup, existing solar/DG) and written into the CRM's fields.
      *
