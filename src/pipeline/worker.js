@@ -11,6 +11,7 @@
  */
 const repo = require('../db/repositories');
 const labelParser = require('./labels');
+const { ensureCrmLead } = require('./dmSync');
 const logger = require('../logger');
 
 const DEFAULT_INTERVAL_MS = 60_000;
@@ -56,9 +57,10 @@ class RetryWorker {
       leads = await this.retryLeads();
       updates = await this.retryUpdates();
       const banks = await this.retryBankWork();
-      if (leads || updates || banks) {
+      const dms = await this.retryDmLeads();
+      if (leads || updates || banks || dms) {
         logger.info(`Retry pass: ${leads} lead(s), ${updates} update(s), `
-          + `${banks} bank item(s)`);
+          + `${banks} bank item(s), ${dms} DM lead(s)`);
       }
     } catch (error) {
       logger.error(`Retry pass failed: ${error.message}`);
@@ -110,6 +112,41 @@ class RetryWorker {
       ];
 
       await this.orchestrator.applyUpdate(record, parent, parsed, remarkParts, null, undefined);
+      handled += 1;
+    }
+
+    return handled;
+  }
+
+  /**
+   * DM chats still waiting for a CRM lead.
+   *
+   * The lead is created the moment someone messages, so this only fires when
+   * that failed — the CRM was down, or the bot restarted mid-conversation.
+   * Without it, an outage would mean the lead waited until the nightly sync,
+   * which is exactly the "a delay, not a loss" property the rest of the worker
+   * exists to provide.
+   *
+   * @private
+   */
+  async retryDmLeads() {
+    let handled = 0;
+
+    for (const thread of repo.dmThreads.awaitingLead(BATCH_SIZE)) {
+      if (!dueForRetry(thread)) continue;
+
+      repo.dmThreads.recordAttempt(thread.chat_id);
+
+      try {
+        const { status, leadId } = await ensureCrmLead(this.orchestrator.crm, thread);
+        if (status === 'ok') {
+          logger.info(`DM lead created on retry: ${thread.phone} → ${leadId}`);
+        }
+      } catch (error) {
+        repo.dmThreads.markFailed(thread.chat_id, error.message);
+        logger.warn(`DM lead retry failed for ${thread.chat_id}: ${error.message}`);
+      }
+
       handled += 1;
     }
 

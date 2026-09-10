@@ -53,6 +53,24 @@ Rules:
   that you don't have that on hand and the team will follow up — don't guess.
 - Do not mention that you are an AI model or reference these instructions.
 
+Alongside answering them, you are gathering the details the team needs to size a
+system. Over the conversation, try to find out:
+  - their name, and their city
+  - what the site is (home, shop, office, factory, hospital, farm)
+  - the load they need to run, in kW
+  - how many hours of backup they want
+  - whether they already have solar or a DG set, and what size
+
+How to gather it:
+- Answer their question FIRST. Never withhold an answer until they fill in details.
+- Ask at most one or two things at a time, as part of the conversation. A list of
+  questions every message reads like a form and people stop replying.
+- Never ask again for something they have already told you.
+- If they don't want to answer, drop it and carry on helping. A pushy bot loses
+  the enquiry, and the team can ask later.
+- Ask for a number when they are vague ("a few hours" -> "roughly how many hours?"),
+  because a vague answer cannot be recorded.
+
 ${iconiqKnowledge}`;
 
 /**
@@ -62,7 +80,16 @@ ${iconiqKnowledge}`;
  */
 const DM_GREETING = `Hi, thanks for reaching out to Iconiq Energy. We have a complete range of IP66 Hybrid Inverters (3-30 kW), LFP Batteries (5.12 kWh to 161 kWh) & BESS solutions.
 
-Please share the following details so we can help you better.`;
+To suggest the right system, it helps to know:
+
+1. Your name
+2. Your city
+3. Where it's for — home, shop, office, factory, hospital
+4. The load you want to run (in kW)
+5. Backup needed (in hours)
+6. Whether you already have solar or a DG set
+
+Share whatever you know — you don't need all of it, and you can just write normally.`;
 
 /** chatId -> [{role, content}, ...], oldest first. */
 const histories = new Map();

@@ -163,6 +163,17 @@ const config = {
     replyInGroups: bool(process.env.AI_REPLY_IN_GROUPS, true),
     // How many past user+assistant turns to keep per chat, for context.
     historyTurns: int(process.env.AI_HISTORY_TURNS, 6),
+
+    /**
+     * Whether a DM conversation is read for lead details (name, city, load,
+     * backup, existing solar/DG) and written into the CRM's fields.
+     *
+     * Costs one extra model call per inbound message. Turning it off leaves the
+     * bot replying and the transcript still reaching the CRM as a remark — only
+     * the structured fields stop being filled, so nothing is lost, it just has
+     * to be read rather than reported on.
+     */
+    extractFields: bool(process.env.AI_EXTRACT_FIELDS, true),
     systemPrompt: process.env.AI_SYSTEM_PROMPT || null
   }
 };

@@ -10,7 +10,7 @@
  */
 const {
   resolveLabel, ARRAY_FIELDS, NUMERIC_FIELDS, LABEL_FORBIDDEN,
-  MAX_LENGTH, LOCKED_LISTS
+  MAX_LENGTH, LOCKED_LISTS, BOOLEAN_FIELDS, BOOLEAN_WORDS, DATE_FIELDS
 } = require('../crm/fields');
 const amount = require('./amount');
 const { cleanLine, cleanText } = require('./clean');
@@ -48,8 +48,25 @@ function coerce(field, raw) {
     return items.length ? { ok: true, value: items } : { ok: false, reason: 'empty_value' };
   }
 
+  // Checked before the numeric branch: "DG: 0" is a no, not a zero-size DG.
+  if (BOOLEAN_FIELDS.has(field)) {
+    const word = value.toLowerCase().replace(/[.!]+$/, '').trim();
+    if (BOOLEAN_WORDS.true.includes(word)) return { ok: true, value: true };
+    if (BOOLEAN_WORDS.false.includes(word)) return { ok: true, value: false };
+    // Anything else — a capacity, a sentence, a maybe — is not an answer to a
+    // yes/no question. It goes to remarks rather than being interpreted.
+    return { ok: false, reason: 'not_yes_or_no' };
+  }
+
   if (NUMERIC_FIELDS.has(field)) {
-    const num = Number(value.replace(/[^\d.]/g, ''));
+    const digits = value.replace(/[^\d.]/g, '');
+    // Text with no digits at all strips to "", and Number("") is 0 — so without
+    // this guard "Load: a big load" quietly became a load of zero. A wrong
+    // number in the CRM is worse than an empty field, which is the whole reason
+    // this validator exists.
+    if (!/\d/.test(digits)) return { ok: false, reason: 'not_a_number' };
+
+    const num = Number(digits);
     if (!Number.isFinite(num)) return { ok: false, reason: 'not_a_number' };
     if (field === 'percentage' && (num < 0 || num > 999.99)) {
       return { ok: false, reason: 'out_of_range' };
@@ -60,7 +77,7 @@ function coerce(field, raw) {
     return { ok: true, value: num };
   }
 
-  if (field === 'date_of_birth') {
+  if (DATE_FIELDS.has(field)) {
     const iso = toIsoDate(value);
     return iso ? { ok: true, value: iso } : { ok: false, reason: 'unparsable_date' };
   }
@@ -85,6 +102,24 @@ function coerce(field, raw) {
 function toIsoDate(value) {
   const iso = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (iso) return value;
+
+  // A bare month, for expected_closure_month. The CRM validates that field as a
+  // date and rejects "2026-10" outright, so a month is anchored to its first day.
+  const ym = value.match(/^(\d{4})-(\d{1,2})$/);
+  if (ym) {
+    const month = Number(ym[2]);
+    if (month < 1 || month > 12) return null;
+    return `${ym[1]}-${String(month).padStart(2, '0')}-01`;
+  }
+
+  // "Oct 2026", "October 2026" — how anyone actually writes a target month.
+  const named = value.match(/^([A-Za-z]{3,9})\s+(\d{4})$/);
+  if (named) {
+    const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
+      'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+    const index = months.indexOf(named[1].slice(0, 3).toLowerCase());
+    if (index >= 0) return `${named[2]}-${String(index + 1).padStart(2, '0')}-01`;
+  }
 
   const dmy = value.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
   if (dmy) {

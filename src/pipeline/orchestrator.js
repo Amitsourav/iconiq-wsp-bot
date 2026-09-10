@@ -24,12 +24,14 @@ const { replies } = require('./replies');
 const { LOCKED_LISTS } = require('../crm/fields');
 const commands = require('./commands');
 const { buildMyLeads } = require('./digest');
+const { ensureCrmLead } = require('./dmSync');
 const { BankHandler } = require('./bank');
 const { DuplicateLeadError, CrmClient } = require('../crm/client');
 const repo = require('../db/repositories');
 const { config } = require('../config');
 const logger = require('../logger');
 const assistant = require('../ai/assistant');
+const extract = require('../ai/extract');
 
 /** Give up after this many CRM attempts and mark the lead failed. */
 const MAX_ATTEMPTS = 8;
@@ -722,38 +724,136 @@ class Orchestrator {
       if (message.fromMe) return;
 
       const text = (message.text || '').trim();
+      if (!text) return;
 
       // Record before acting, same principle as the group pipeline: capture the
       // customer's message even if the AI reply below is off, fails, or the
       // send later gets rate-limited — the conversation itself is the thing we
       // must not lose.
-      if (text) {
-        repo.dmThreads.upsert(message.chatId, phoneUtil.fromJidInternational(message.chatId));
-        this.recordDmMessage(message.chatId, 'in', text, message.id);
+      repo.dmThreads.upsert(message.chatId, phoneUtil.fromJidInternational(message.chatId));
+      this.recordDmMessage(message.chatId, 'in', text, message.id);
+
+      // Reply first, create the lead second. The CRM routinely takes 2-20s per
+      // call and a customer waiting on a chatbot notices every one of them. The
+      // conversation is already safe in our database by this point, so nothing
+      // is at risk in doing the slow half afterwards.
+      await this.replyToDm(message, rawMessage, text);
+      await this.ensureDmLead(message.chatId);
+      await this.captureDmFields(message.chatId);
+    } catch (error) {
+      logger.error(`Direct-message handling failed on ${message?.id}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Answer a DM, if the assistant is switched on and sending is not paused.
+   * @private
+   */
+  async replyToDm(message, rawMessage, text) {
+    if (!config.ai.enabled || !config.ai.replyInDms) return;
+    if (repo.settings.get('sending_paused') === 'true') return;
+
+    const answer = await assistant.replyDirect(message.chatId, text);
+    if (!answer) return;
+
+    const sent = await this.whatsapp.reply({
+      groupId: message.chatId, // works for any JID, group or individual
+      text: answer,
+      quoteMessage: rawMessage,
+      mentions: []
+    });
+
+    // Outbound messages never come back through the WhatsApp event stream —
+    // fromMe is filtered out before it reaches here — so this is the only
+    // place the bot's half of the conversation ever gets recorded. Keyed on a
+    // synthetic id (there is no real WhatsApp id to use) so a retry of the
+    // same inbound message can't double up the transcript.
+    if (sent) this.recordDmMessage(message.chatId, 'out', answer, `out:${message.id}`);
+  }
+
+  /**
+   * Put the lead in the CRM as soon as someone messages, rather than waiting for
+   * the nightly sync.
+   *
+   * The transcript still goes up once a day as a single tidy remark — a remark
+   * per message would bury the record — but the lead itself exists from the
+   * first message, so nobody has to wait until the evening to see it.
+   *
+   * A failure here is not fatal and is never announced: the conversation is
+   * already recorded, and the retry worker creates the lead once the CRM is
+   * reachable again.
+   *
+   * @private
+   */
+  async ensureDmLead(chatId) {
+    if (!this.crm.configured) return;
+
+    const thread = repo.dmThreads.byChatId(chatId);
+    if (!thread || thread.crm_lead_id) return;
+
+    try {
+      const { status, leadId } = await ensureCrmLead(this.crm, thread);
+      if (status === 'ok') {
+        logger.info(`DM lead ready: ${thread.phone || chatId} → ${leadId}`);
+      }
+    } catch (error) {
+      repo.dmThreads.markFailed(chatId, error.message);
+      logger.warn(`DM lead not created yet for ${chatId}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Read the conversation so far and write anything new into the CRM's fields.
+   *
+   * Runs after the reply, so it never adds to what the customer waits for, and
+   * after the lead exists, so there is somewhere to write.
+   *
+   * Only genuinely new values are sent. The assistant re-reads the whole chat
+   * each time and repeats facts it already reported, and rewriting an unchanged
+   * value would fill the audit trail with writes that change nothing.
+   *
+   * A field already captured is never rewritten, even if the model later reads
+   * the conversation differently — the first clear statement wins, and a
+   * counsellor's manual correction is never overwritten by the bot.
+   *
+   * @private
+   */
+  async captureDmFields(chatId) {
+    if (!config.ai.enabled || !config.ai.extractFields) return;
+    if (!this.crm.configured) return;
+
+    const thread = repo.dmThreads.byChatId(chatId);
+    if (!thread?.crm_lead_id) return;
+
+    try {
+      const history = repo.dmMessages.recentForChat(chatId).map((row) => ({
+        role: row.direction === 'in' ? 'user' : 'assistant',
+        content: row.body
+      }));
+
+      const { fields } = await extract.extractFields(history);
+
+      const already = repo.dmThreads.captured(chatId);
+      const fresh = {};
+      for (const [field, value] of Object.entries(fields)) {
+        if (field in already) continue;
+        fresh[field] = value;
       }
 
-      if (!config.ai.enabled || !config.ai.replyInDms) return;
-      if (repo.settings.get('sending_paused') === 'true') return;
-      if (!text) return;
+      if (!Object.keys(fresh).length) return;
 
-      const answer = await assistant.replyDirect(message.chatId, text);
-      if (!answer) return;
+      await this.crm.updateLead(thread.crm_lead_id, fresh);
+      repo.dmThreads.setCaptured(chatId, fresh);
 
-      const sent = await this.whatsapp.reply({
-        groupId: message.chatId, // works for any JID, group or individual
-        text: answer,
-        quoteMessage: rawMessage,
-        mentions: []
-      });
+      // A real name replaces the phone number the lead was created under.
+      if (fresh.full_name) repo.dmThreads.setName(chatId, fresh.full_name);
 
-      // Outbound messages never come back through the WhatsApp event stream —
-      // fromMe is filtered out before it reaches here — so this is the only
-      // place the bot's half of the conversation ever gets recorded. Keyed on a
-      // synthetic id (there is no real WhatsApp id to use) so a retry of the
-      // same inbound message can't double up the transcript.
-      if (sent) this.recordDmMessage(message.chatId, 'out', answer, `out:${message.id}`);
+      logger.info(`DM lead ${thread.phone || chatId} updated: `
+        + Object.entries(fresh).map(([k, v]) => `${k}=${v}`).join(', '));
     } catch (error) {
-      logger.error(`AI direct-message reply failed on ${message?.id}: ${error.message}`);
+      // Never fatal. The transcript still reaches the CRM as a remark, so the
+      // information survives even when no field was set.
+      logger.warn(`DM field capture failed for ${chatId}: ${error.message}`);
     }
   }
 

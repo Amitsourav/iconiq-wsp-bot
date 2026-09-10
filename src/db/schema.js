@@ -314,6 +314,39 @@ const MIGRATIONS = [
       CREATE INDEX idx_dm_messages_synced ON dm_messages(synced);
     `
   }
+  ,{
+    name: '005_dm_thread_attempts',
+    sql: `
+      -- How many times we have tried to give this chat a CRM lead.
+      --
+      -- The lead is now created the moment someone messages rather than at the
+      -- nightly sync, so a CRM outage is no longer something that waits until
+      -- 22:30 to be noticed — the retry worker picks it up. That worker backs
+      -- off exponentially on this count, exactly as it does for leads and bank
+      -- shares, so an outage is not hammered once a minute for hours.
+      ALTER TABLE dm_threads ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+
+      CREATE INDEX idx_dm_threads_awaiting
+        ON dm_threads(crm_lead_id, status, attempts);
+    `
+  }
+  ,{
+    name: '006_dm_captured_fields',
+    sql: `
+      -- The CRM fields we have already written for this chat, as JSON.
+      --
+      -- The assistant re-reads the whole conversation on every message, so it
+      -- reports the same facts over and over. Without a record of what has
+      -- already been sent, every message would rewrite every field — filling
+      -- the CRM's audit trail with writes that change nothing, and burning a
+      -- request each time against an API that takes seconds to answer.
+      --
+      -- Kept here rather than read back from the CRM because a counsellor may
+      -- correct a value by hand, and re-reading would let the bot immediately
+      -- overwrite that correction with its own older reading of the chat.
+      ALTER TABLE dm_threads ADD COLUMN captured TEXT;
+    `
+  }
 ];
 
 module.exports = { MIGRATIONS };

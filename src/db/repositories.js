@@ -493,6 +493,56 @@ const dmThreads = {
     `).run(String(error).slice(0, 1000), chatId);
   },
 
+  /** The CRM fields already written for this chat. */
+  captured(chatId) {
+    const row = this.byChatId(chatId);
+    if (!row?.captured) return {};
+    try {
+      return JSON.parse(row.captured);
+    } catch {
+      // A corrupt value must not stop the conversation; treat it as nothing
+      // captured yet. The worst case is one redundant write.
+      return {};
+    }
+  },
+
+  /** Merge newly written fields into the record of what the CRM already holds. */
+  setCaptured(chatId, fields) {
+    const merged = { ...this.captured(chatId), ...fields };
+    get().prepare(`
+      UPDATE dm_threads SET captured = ?, updated_at = datetime('now') WHERE chat_id = ?
+    `).run(JSON.stringify(merged), chatId);
+    return merged;
+  },
+
+  /** Count an attempt to create this chat's lead, for the retry backoff. */
+  recordAttempt(chatId) {
+    get().prepare(`
+      UPDATE dm_threads
+      SET attempts = attempts + 1, updated_at = datetime('now')
+      WHERE chat_id = ?
+    `).run(chatId);
+  },
+
+  /**
+   * Chats that have no CRM lead yet and could still get one.
+   *
+   * `ambiguous` is excluded deliberately: that state means several leads carry
+   * this number and a human has to decide which. Retrying would just guess
+   * wrong once a minute. The nightly sync picks those up again, by which time
+   * the records may have been merged.
+   */
+  awaitingLead(limit = 10) {
+    return get().prepare(`
+      SELECT * FROM dm_threads
+      WHERE crm_lead_id IS NULL
+        AND phone IS NOT NULL
+        AND status != 'ambiguous'
+      ORDER BY updated_at ASC
+      LIMIT ?
+    `).all(limit);
+  },
+
   recent(limit = 50) {
     return get().prepare(`
       SELECT * FROM dm_threads ORDER BY updated_at DESC LIMIT ?
@@ -519,6 +569,21 @@ const dmMessages = {
     return get().prepare(`
       SELECT DISTINCT chat_id FROM dm_messages WHERE synced = 0
     `).all().map((r) => r.chat_id);
+  },
+
+  /**
+   * The recent history of one chat, oldest last.
+   *
+   * Read from the database rather than the assistant's in-memory window so
+   * extraction still sees the whole conversation after a restart — otherwise a
+   * redeploy mid-chat would lose every detail the customer had already given.
+   */
+  recentForChat(chatId, limit = 40) {
+    return get().prepare(`
+      SELECT * FROM (
+        SELECT * FROM dm_messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?
+      ) ORDER BY id ASC
+    `).all(chatId, limit);
   },
 
   /** Unsynced messages for one chat, oldest first — the order they were sent in. */

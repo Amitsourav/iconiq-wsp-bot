@@ -9,6 +9,31 @@
  */
 
 /**
+ * The energy fields, added to the CRM for Iconiq Energy.
+ *
+ * This tenant sells hybrid inverters, LFP batteries and BESS, so a lead is
+ * qualified on load and backup rather than on a course and a university. The CRM
+ * carries both sets — the education columns are inherited from the shared
+ * codebase — and these are the ones that matter here.
+ *
+ * Verified against the live `LeadCreate`/`LeadUpdate` schema on 2026-09-10, and
+ * confirmed by a round-trip: every one of them was written and read back intact.
+ * They appear on BOTH create and update, so unlike loan_amount (C11) they need no
+ * deferred patch.
+ *
+ * Until this set existed the client stripped all ten as unknown keys, and the CRM
+ * answered 201 while discarding them (C10) — a customer's "10 kW, 4 hours backup"
+ * was lost with nothing anywhere reporting it.
+ */
+const ENERGY_FIELDS = [
+  'organization', 'website', 'application_industry',
+  'load_capacity_kw', 'backup_duration_hours',
+  'solar_present', 'solar_capacity_kw',
+  'dg_available', 'dg_capacity_kva',
+  'expected_closure_month'
+];
+
+/**
  * Fields accepted by POST /leads. Anything not in this set is silently dropped by
  * the CRM with a 201 response (C10), so we validate against it before sending.
  */
@@ -17,7 +42,8 @@ const CREATE_FIELDS = new Set([
   'city', 'state', 'country', 'pincode', 'highest_qualification', 'stream',
   'passing_year', 'college_name', 'university', 'percentage', 'target_degree',
   'target_intake', 'preferred_countries', 'preferred_universities',
-  'lead_source_id', 'assigned_agent_id', 'custom_fields', 'tags', 'notes'
+  'lead_source_id', 'assigned_agent_id', 'custom_fields', 'tags', 'notes',
+  ...ENERGY_FIELDS
 ]);
 
 /**
@@ -84,7 +110,10 @@ const MAX_LENGTH = {
   loan_amount: 50,
   budget: 50,
   bank_name: 100,
-  primary_university: 200
+  primary_university: 200,
+  organization: 200,
+  website: 200,
+  application_industry: 100
 };
 
 /**
@@ -193,14 +222,95 @@ const LABEL_MAP = {
   'overall': 'loan_amount',
   'requirement': 'loan_amount',
   'budget': 'loan_amount',
-  'bank': 'bank_name'
+  'bank': 'bank_name',
+
+  // Energy — what qualifies an Iconiq lead.
+  //
+  // Two separate labels for solar and for DG, one asking whether it exists and
+  // one asking how big it is. Folding them into a single label would mean
+  // deciding what "Solar: 5kW" implies about the yes/no field, and that is a
+  // guess. Kept apart, each answer means exactly one thing.
+  'company': 'organization',
+  'company name': 'organization',
+  'organisation': 'organization',
+  'organization': 'organization',
+  'firm': 'organization',
+  'business': 'organization',
+  'website': 'website',
+  'site': 'website',
+  'industry': 'application_industry',
+  'application': 'application_industry',
+  'application industry': 'application_industry',
+  'sector': 'application_industry',
+  'usage': 'application_industry',
+  'load': 'load_capacity_kw',
+  'load capacity': 'load_capacity_kw',
+  'connected load': 'load_capacity_kw',
+  'kw': 'load_capacity_kw',
+  'load kw': 'load_capacity_kw',
+  'capacity': 'load_capacity_kw',
+  'backup': 'backup_duration_hours',
+  'backup hours': 'backup_duration_hours',
+  'backup duration': 'backup_duration_hours',
+  'hours': 'backup_duration_hours',
+  'solar': 'solar_present',
+  'solar present': 'solar_present',
+  'existing solar': 'solar_present',
+  'solar installed': 'solar_present',
+  'solar capacity': 'solar_capacity_kw',
+  'solar kw': 'solar_capacity_kw',
+  'solar size': 'solar_capacity_kw',
+  'dg': 'dg_available',
+  'dg available': 'dg_available',
+  'generator': 'dg_available',
+  'genset': 'dg_available',
+  'dg capacity': 'dg_capacity_kva',
+  'dg kva': 'dg_capacity_kva',
+  'kva': 'dg_capacity_kva',
+  'generator capacity': 'dg_capacity_kva',
+  'closure month': 'expected_closure_month',
+  'expected closure': 'expected_closure_month',
+  'closing month': 'expected_closure_month',
+  'timeline': 'expected_closure_month'
 };
 
 /** Fields whose value is an array, so a comma-separated reply splits into items. */
 const ARRAY_FIELDS = new Set(['preferred_countries', 'preferred_universities', 'tags']);
 
 /** Fields that must be a number. */
-const NUMERIC_FIELDS = new Set(['percentage', 'passing_year', 'docs_required']);
+const NUMERIC_FIELDS = new Set([
+  'percentage', 'passing_year', 'docs_required',
+  // Energy sizing. Sent as numbers; the CRM returns them as fixed-point strings
+  // ("10.00"), which is why nothing here compares the two as strings.
+  'load_capacity_kw', 'backup_duration_hours', 'solar_capacity_kw', 'dg_capacity_kva'
+]);
+
+/**
+ * Fields that must be true or false.
+ *
+ * Deliberately strict: only an unmistakable yes or no sets one. "Solar: 5kW"
+ * fails here and goes to remarks rather than being read as "yes" — a capacity is
+ * not an answer to "do you have solar", and guessing that it is would put a
+ * fact in the CRM the customer never stated. Use `Solar Capacity:` for the size.
+ */
+const BOOLEAN_FIELDS = new Set(['solar_present', 'dg_available']);
+
+/** Words that unambiguously mean yes or no, including the common Hinglish ones. */
+const BOOLEAN_WORDS = {
+  true: ['yes', 'y', 'yeah', 'yep', 'haan', 'han', 'ha', 'hai', 'true', '1',
+    'available', 'present', 'installed', 'done', 'have', 'already'],
+  false: ['no', 'n', 'nope', 'nahi', 'nah', 'false', '0', 'none', 'nil',
+    'not available', 'not present', 'na', 'n/a', 'absent']
+};
+
+/**
+ * Fields that must be a full YYYY-MM-DD date.
+ *
+ * `expected_closure_month` reads as a month but the CRM validates it as a date —
+ * "2026-10" is rejected with a 422 ("input is too short"), confirmed live. A bare
+ * month is therefore anchored to the first of that month.
+ */
+const DATE_FIELDS = new Set(['date_of_birth', 'expected_closure_month']);
 
 /**
  * Resolve a WhatsApp label to a CRM field name.
@@ -226,6 +336,7 @@ module.exports = {
   CREATE_FIELDS,
   UPDATE_FIELDS,
   UPDATE_ONLY_FIELDS,
+  ENERGY_FIELDS,
   NEVER_SEND,
   UPDATE_FORBIDDEN,
   LABEL_FORBIDDEN,
@@ -234,6 +345,9 @@ module.exports = {
   LABEL_MAP,
   ARRAY_FIELDS,
   NUMERIC_FIELDS,
+  BOOLEAN_FIELDS,
+  BOOLEAN_WORDS,
+  DATE_FIELDS,
   resolveLabel,
   isUpdateOnly
 };

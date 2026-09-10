@@ -49,6 +49,79 @@ function extractName(rows) {
 }
 
 /**
+ * Find or create the CRM lead for a DM chat, and remember it on the thread.
+ *
+ * Shared by two callers on purpose: the orchestrator calls it the moment someone
+ * messages, and the nightly sync calls it for any thread that still has no lead
+ * (because the CRM was down at the time, or the bot was restarting). One
+ * implementation means the two can never drift into creating leads by different
+ * rules.
+ *
+ * Safe to call repeatedly — a thread that already carries a lead id returns it
+ * without touching the CRM.
+ *
+ * @param {import('../crm/client').CrmClient} crm
+ * @param {object} thread - a dm_threads row
+ * @param {string} [name] - a name discovered since the thread was written
+ * @returns {Promise<{ status: 'ok'|'ambiguous'|'no_phone', leadId: string|null }>}
+ * @throws on a CRM failure, so the caller can record it and retry later
+ */
+async function ensureCrmLead(crm, thread, name) {
+  if (thread.crm_lead_id) return { status: 'ok', leadId: thread.crm_lead_id };
+
+  // Without a number there is nothing to deduplicate against, and creating a
+  // lead that can never be matched to anything is worse than waiting.
+  if (!thread.phone) return { status: 'no_phone', leadId: null };
+
+  const match = await crm.findByPhone(thread.phone);
+
+  if (match.status === 'ambiguous') {
+    // C5 — more than one lead shares this phone. Do not guess which one this
+    // conversation belongs to; hold it for a human and try again next cycle,
+    // by which time someone may have merged the records.
+    repo.dmThreads.markAmbiguous(
+      thread.chat_id, `${match.candidates} leads already share this phone`
+    );
+    return { status: 'ambiguous', leadId: null };
+  }
+
+  let leadId;
+
+  if (match.status === 'found') {
+    leadId = match.lead.id;
+  } else {
+    // The CRM requires a name; the phone is what actually identifies the lead.
+    // Falling back to the number when nobody has given a name yet is the same
+    // trade-off applied in the group pipeline.
+    try {
+      const { lead } = await crm.createLead({
+        full_name: name || thread.name || thread.phone,
+        phone: thread.phone
+        // assigned_agent_id deliberately omitted — this thread has no employee
+        // to attribute it to, and C4's auto-own risk only applies to a
+        // manager-authenticated caller. This integration authenticates as an
+        // admin (C6), so omitting it leaves the lead genuinely unassigned
+        // rather than silently owned by anyone.
+      });
+      leadId = lead.id;
+    } catch (error) {
+      // B2 — findByPhone's substring search can miss a lead that a plain create
+      // collides with anyway (e.g. it was added between our search and our
+      // create). The duplicate error carries the real id, so recover instead of
+      // failing the whole conversation.
+      if (error instanceof DuplicateLeadError && error.existingLeadId) {
+        leadId = error.existingLeadId;
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  repo.dmThreads.setCrmLead(thread.chat_id, leadId);
+  return { status: 'ok', leadId };
+}
+
+/**
  * Sync every DM chat that has unsynced messages.
  * @param {import('../crm/client').CrmClient} crm
  * @returns {Promise<{ synced: number, failed: number }>}
@@ -77,54 +150,13 @@ async function syncDmConversations(crm) {
     if (name && !thread.name) repo.dmThreads.setName(chatId, name);
 
     try {
-      let leadId = thread.crm_lead_id;
+      const { status, leadId } = await ensureCrmLead(crm, thread, name);
 
-      if (!leadId) {
-        const match = await crm.findByPhone(thread.phone);
-
-        if (match.status === 'ambiguous') {
-          // C5 — more than one lead shares this phone. Do not guess which one
-          // this conversation belongs to; hold it for a human, try again next
-          // cycle (someone may have merged/fixed the records by then).
-          repo.dmThreads.markAmbiguous(
-            chatId, `${match.candidates} leads already share this phone`
-          );
-          failed += 1;
-          continue;
-        }
-
-        if (match.status === 'found') {
-          leadId = match.lead.id;
-        } else {
-          // The CRM requires a name; the phone is what actually identifies the
-          // lead. Falling back to the number when nobody has given a name yet
-          // is the same trade-off applied in the group pipeline.
-          try {
-            const { lead } = await crm.createLead({
-              full_name: name || thread.phone,
-              phone: thread.phone
-              // assigned_agent_id deliberately omitted — this thread has no
-              // employee to attribute it to, and C4's auto-own risk only
-              // applies to a manager-authenticated caller. This integration
-              // authenticates as an admin (C6), so omitting it leaves the
-              // lead genuinely unassigned rather than silently owned by
-              // anyone.
-            });
-            leadId = lead.id;
-          } catch (error) {
-            // B2 — findByPhone's substring search can miss a lead that a plain
-            // create collides with anyway (e.g. it was added between our
-            // search and our create). The duplicate error carries the real id,
-            // so recover instead of failing the whole sync for this chat.
-            if (error instanceof DuplicateLeadError && error.existingLeadId) {
-              leadId = error.existingLeadId;
-            } else {
-              throw error;
-            }
-          }
-        }
-
-        repo.dmThreads.setCrmLead(chatId, leadId);
+      // Held for a human, or no number to match on. Either way the transcript
+      // stays unsynced and is picked up again next cycle.
+      if (status !== 'ok') {
+        failed += 1;
+        continue;
       }
 
       await crm.addRemark(leadId, remark);
@@ -142,4 +174,4 @@ async function syncDmConversations(crm) {
   return { synced, failed };
 }
 
-module.exports = { syncDmConversations, formatLine, extractName };
+module.exports = { syncDmConversations, ensureCrmLead, formatLine, extractName };

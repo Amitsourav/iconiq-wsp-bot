@@ -2,65 +2,86 @@
 
 Living document. Update it when a decision is made or an assumption turns out wrong.
 
-- **Owner:** Amit Sourav — loan consultancy
-- **Status:** v2 rebuild, foundation laid, direction not yet locked
-- **Last updated:** 2026-08-05
+- **Owner:** Amit Sourav
+- **Status:** v2 running. Way 1 complete; Way 2 capturing but not yet interpreting.
+- **Last updated:** 2026-09-10
 
 ---
 
 ## 1. The problem
 
-Bank loan groups on WhatsApp carry a constant stream of lead updates — a name, a
-phone number, and where that person stands with that bank ("login", "sanctioned",
-"docs pending"). Tracking this by hand across many bank groups does not scale, and
-the same borrower appears in several groups at once with a different status in each.
+Leads arrive over WhatsApp and get typed into the CRM by hand. An admin posts a
+lead in the in-house group and tags the employee it belongs to; that employee
+retypes it. Everything discussed afterwards — a college name, a loan amount, which
+bank it went to — is retyped too, or lost.
 
-The bot reads those groups and keeps one Google Sheet current, so there is a single
-view of every borrower and where they stand with every bank.
+Separately, bank groups carry a constant stream of updates about leads we already
+hold. Tracking that by hand across many groups does not scale.
+
+The bot reads both and keeps the CRM current, so nobody retypes anything.
 
 ## 2. How it works, in one paragraph
 
-A phone number that is a member of the bank groups is linked to the server as a
-WhatsApp "linked device". The server runs headless Chrome against WhatsApp Web and
-receives every message that number receives. Messages from monitored groups are
-parsed into `{ name, phone, status, remark }`. The phone number identifies the
-borrower; the group identifies which bank column to update. One row per borrower,
-many bank columns.
+A phone number that is a member of the groups is linked to the server as a WhatsApp
+"linked device". The server runs Baileys, which speaks WhatsApp's multi-device
+protocol directly, and receives every message that number receives. Messages from
+monitored groups are routed by the group's `purpose`: an **in-house** group creates
+and updates CRM leads; a **bank** group records what that lender said about a lead
+we already have. Direct messages to the number are a third path entirely — a
+chatbot conversation, synced into the CRM once a day.
 
 ---
 
 ## 3. Domain rules — these are fixed
 
-### The sheet
-
-One tab. Row 2 holds section labels, **row 3 holds headers, data begins at row 4.**
-
-| Column | Contents | Written by |
-|--------|----------|-----------|
-| A | # (serial) | bot |
-| B | Name | bot |
-| C | **Phone — the unique key** | bot |
-| D–J | Source, Institution, Overall Status, Loan Stage, Amount, Next Follow Up, Next Step | **user, by hand — bot must never write here** |
-| K | Remarks / Notes | bot, append-only with IST timestamps |
-| L onward | One column per bank | bot |
-
-Banks currently in the sheet: PNB, SBI, Axis, ICICI, Credila, IDFC, Tata Capital,
-Avanse, Zolve, Kuhoo, Auxilo, Poonawala, UniCred, Edgro, Incred.
-
-The bank section ends where row 2 shows the next section label (e.g. "AUTO SCORES").
-Bank columns are discovered by reading the sheet, never hardcoded.
-
-### Valid bank statuses
-
-Only these ten values may be written into a bank column:
-
-`Shared` · `Docs Pending` · `Login` · `Under Process` · `Sanctioned` · `PF` ·
-`Disbursed` · `Rejected` · `DNP` · `Not Doable`
-
 ### Identity
 
-Phone number, matched on the **last 10 digits**, so `+91` prefixes and spacing
-variations resolve to the same person. One borrower = one row, forever.
+Phone number. Indian numbers normalise to `+91XXXXXXXXXX`, matching the CRM's own
+`normalize_phone` so we can predict that they will deduplicate. Overseas numbers
+are accepted only when written with an explicit `+` and country code, at an E.164
+length of 8–15 digits — the `+` is what stops an account number becoming a lead.
+One borrower = one CRM lead, and the bot never creates a second for a number that
+already exists.
+
+**A lead needs no name.** The CRM requires `full_name`, so when none is found the
+phone number stands in as the name. It is honest, searchable, and obviously
+provisional; a later reply carrying `Name: Priya Sharma` replaces it.
+
+### Way 1 — the in-house group
+
+A message is a **new lead** when it carries both a phone number and an employee
+`@mention` (R8). A real mention carries the mentioned person's number as structured
+data, so assignment is exact rather than guessed.
+
+A **reply** to a lead message updates that lead. `Field: value` writes a structured
+CRM field; anything else is appended to remarks; acknowledgements are filtered
+(R9, R11). One message may set several fields, and one message may list several
+leads under a single tag.
+
+The bot replies in the group — confirmations, warnings, and held-lead prompts. The
+full list is `docs/BOT-MESSAGES.md`, and it sends nothing else.
+
+### Way 2 — bank groups
+
+Each group maps to exactly one bank, so the bot never has to work out which lender
+is being discussed. A phone number in a message means that lead has been shared
+with this bank; the share is recorded against the lead, and further conversation is
+kept against that lead-and-bank pair. A number matching nothing is reported to our
+own team, in our own group.
+
+**The bot never posts in a bank group.** Enforced at the database level.
+
+### What the bot never writes
+
+`notes` (destructive, shared with the AI voice pipeline — C1) · `custom_fields` and
+`tags` (replace-not-merge — C2) · `phone` on update (C3) · `current_stage` (R5 —
+creation lands at `created` and the bot never advances a lead).
+
+### Locked lists
+
+`bank_name` — 18 values, `bank_status` — 7. Matched exactly or not written at all;
+anything outside the list goes to remarks. Both live in `src/crm/fields.js`, which
+is the executable form of `docs/FIELD-MAPPING.md`.
 
 ---
 
@@ -70,24 +91,26 @@ These constraints are not negotiable and shaped the design.
 
 **There is no such thing as a bot account in a WhatsApp group.** Groups contain
 phone numbers, nothing else. A "bot" is always: a real phone number that is a
-member, plus software driving that number. Nothing gets "added" except a number.
+member, plus software driving that number.
 
 **The official Meta Cloud API cannot read group messages at all.** Group access is
-not exposed to anyone. This means `whatsapp-web.js` (unofficial, linked-device
-based) is the only way to do this job. We are locked into it — that is a fact about
-the platform, not a shortcut.
+not exposed to anyone. That locks us into a linked-device library — first
+`whatsapp-web.js`, now Baileys — and is a fact about the platform, not a shortcut.
 
-**The QR scan is one-time.** The session is written to `.wwebjs_auth/` and survives
-restarts, reboots, and redeploys. It breaks only if: the primary phone stays offline
-for ~14 days, the folder is deleted, the device is logged out from the phone, or a
-WhatsApp Web change breaks the library.
+**The QR scan is one-time.** The session is written to disk and survives restarts,
+reboots, and redeploys. It breaks only if: the primary phone stays offline for ~14
+days, the folder is deleted, the device is logged out from the phone, or a WhatsApp
+change breaks the library.
 
-**Therefore `.wwebjs_auth/` is the single most fragile thing in the system.** Any
-deploy that replaces the project folder destroys the login and requires physical
-access to the phone to recover.
+**Therefore the session folder is the single most fragile thing in the system.** Any
+deploy that replaces it destroys the login and requires physical access to the
+phone. On Railway it lives on a volume for exactly this reason — see `DEPLOY.md`.
 
-**The bot only sees messages sent after its number joined a group.** No history
-is ever backfilled.
+**The bot only sees messages sent after its number joined a group.** No history is
+backfilled. A connection can also go quiet while still reporting "open" — seen live
+on 2026-08-06, eleven minutes connected and receiving nothing — so the socket is
+probed by a watchdog rather than trusted, and a reconnect asks the phone to replay
+from the last message we recorded.
 
 ---
 
@@ -97,35 +120,34 @@ is ever backfilled.
 
 | Decision | Choice | Why |
 |----------|--------|-----|
-| Platform | `whatsapp-web.js`, linked device | Official API cannot read groups |
+| Platform | Linked device | Official API cannot read groups |
+| Library | **Baileys** | ~100 MB against whatsapp-web.js's ~500 MB; speaks the protocol directly instead of driving headless Chrome |
 | Rebuild vs patch | Full rebuild, v1 deleted | v1 had drifted from what it actually did |
+| Destination | **The in-house CRM**, not a Google Sheet | We control it; a missing endpoint is a decision, not an obstacle |
 | Version control | Git from commit one | v1 had none, which made the delete irreversible |
-| Language | CommonJS, Node 20+ | Boring and reliable on a server |
+| Language | CommonJS, Node 22 | Boring and reliable on a server |
 | Group identity | Permanent WhatsApp group ID | Names change; v1 broke silently when they did |
-| Sheet identity | Phone, last 10 digits | Carried over from v1 — this part worked |
+| Lead identity | Phone, normalised as the CRM does | Carried over from v1 — this part worked |
+| Parsing | **Rules, not AI** | Deterministic, free, testable, and cannot corrupt a field. Structured fields are written only from explicit labels or closed vocabularies |
+| Reply handling | Labelled → field, everything else → remarks | A missed lead is visible; corrupted data is not |
+| Bot sending | Yes, but only in the in-house group | A lead held silently in a queue nobody checks is worthless |
+| Reassignment | Allowed, but only from named numbers | It takes work off whoever had it |
+| Hosting | Railway, with a volume | See `DEPLOY.md` |
 
-### Open — blocking further feature work
+### Open
 
-**1. Which phone number runs it.**
-Own number works today and is already inside bank groups. A second number keeps
-personal WhatsApp separate but must be added to each group by an admin, which is
-usually not possible in bank-run groups. *Leaning: own number for bank groups.*
-Currently being set up on a phone.
+**Way 2 — what a bank message *means*.** The bot records shares and conversation
+today, but never sets `bank_status` and never moves a lead's stage. Interpreting
+bank language is deliberately unbuilt until there are enough real messages to
+design against. `docs/WAY-2-PLAN.md` carries the open questions: what happens when
+the phone is unknown, whether a bank update should move the main stage, what to do
+when two banks disagree, and where a rejection goes when `bank_status` has no value
+for it.
 
-**2. How messages get parsed.**
-- *AI (Claude API)* — handles real bank-group language: Hinglish, typos, no labels,
-  several leads in one message. Costs a few paise per message, needs an API key.
-- *Rules/regex, rebuilt properly* — free, instant, predictable, but only catches
-  formats anticipated in advance. v1's regex parser failed on ordinary messages.
-- *Rules first, AI on fallback* — cheapest AI option, two code paths to maintain.
-
-**3. Which admin panel screens are actually wanted.**
-QR/connection and group→bank mapping are effectively mandatory. Live logs, the
-dashboard charts, the leads table, and CSV export are open — the Google Sheet is
-already the real view of the leads.
-
-**4. Whether CRM sync stays.**
-It was disabled in v1 and pointed at a placeholder URL.
+**The AI assistant's scope.** `src/ai/` answers direct messages using an **Iconiq
+Energy** product knowledge base — a different business from the loan pipeline the
+rest of this repository serves. It is off unless `AI_REPLY_ENABLED` is set. Whether
+it belongs in this service at all is unresolved.
 
 ---
 
@@ -134,88 +156,86 @@ It was disabled in v1 and pointed at a placeholder URL.
 | v1 problem | v2 prevention |
 |-----------|---------------|
 | Groups matched by exact name; a rename stopped capture silently | Matched on permanent group ID |
-| Regex parser failed on real messages, 9 of 11 tests failing | Parser approach being reconsidered (decision 2) |
+| Regex parser failed on real messages, 9 of 11 tests failing | Rebuilt around closed vocabularies, with tests on real message text |
 | Tests asserted an `email` field the parser no longer produced | Tests are part of the definition of done |
 | `email` column dead everywhere but still written as `undefined` | Schema carries only fields that exist |
-| `GOOGLE_SHEET_NAME` setting ignored, `Sheet1` hardcoded everywhere | All env access via `config.js`, tab name honoured |
-| Sheet sync failure recorded once, never retried — lead lost | `sheet_status` + attempt counter, retried by worker |
+| `GOOGLE_SHEET_NAME` setting ignored, `Sheet1` hardcoded everywhere | All env access via `config.js` |
+| Sync failure recorded once, never retried — lead lost | Status + attempt counter, retried by the worker with backoff |
 | Replies matched by exact raw-text comparison, missed on whitespace | Matched on the quoted message's WhatsApp ID |
 | Redelivered messages after reconnect became duplicate rows | `wa_message_id` UNIQUE — reprocessing is a no-op |
-| Messages that failed to parse vanished with no record | `skipped_messages` table with reason, visible in panel |
-| 24h phone dedupe blocked legitimate updates from other bank groups | Dedupe is per message content, short window, not per phone |
+| Messages that failed to parse vanished with no record | `skipped_messages` table with reason, visible in the panel |
+| 24h phone dedupe blocked legitimate updates | Dedupe is per message id, not per phone |
 | `ADMIN_PASS=changeme123` shipped and ran in production | Boot refuses to start on known default passwords |
 | No git — deletion was unrecoverable | Git from commit one |
 | Setup guide described a different product than the code | This document, kept current |
 
 ---
 
-## 7. Task list
+## 7. What is built
 
-### Phase 0 — Foundation ✅ done
-- [x] Project skeleton, git, `.gitignore` covering secrets and session
-- [x] `config.js` with validation; refuses known default passwords
-- [x] `logger.js` — console, daily file, subscribers
-- [x] Database: transactional migration runner, schema 001
-- [x] `CLAUDE.md` and this brief
+### Foundation
+- `config.js` with validation; refuses known default passwords and a missing JWT secret
+- `logger.js` — console, file, subscribers, mirrored into the database for the panel
+- Transactional migration runner; migrations 001–004
 
-### Phase 1 — Decisions 🔴 blocking
-- [ ] Decide the phone number (own vs dedicated) — setup in progress
-- [ ] Decide the parsing approach
-- [ ] Decide which panel screens are wanted
-- [ ] Decide CRM in or out
-- [ ] Recover `GOOGLE_SHEET_ID` and `google-credentials.json` (from the VM, or
-      regenerate in Google Cloud and re-share the sheet)
+### Connection
+- Baileys client: session handling, QR **and** 8-digit pairing code, reconnect with backoff
+- Liveness watchdog — the socket is probed, not trusted
+- Gap recovery: after a reconnect, history is replayed from each group's watermark
+- Group discovery, so mapping is picked from a real list rather than typed
+- Hard send rate limit, and own-message filtering
 
-### Phase 2 — Connection
-- [ ] WhatsApp client: session handling, QR, reconnect with backoff
-- [ ] Group discovery — list real groups so mapping is picked, never typed
-- [ ] Message routing: monitored groups only, ignore own status broadcasts
-- [ ] Verify session survives a simulated redeploy
+### Way 1 — in-house → CRM
+- Phone normalisation mirroring the CRM's own, including overseas numbers
+- Lead detection: mention + phone, name extraction that refuses to guess, batch
+  messages listing several leads, amount/institution/course inference
+- Label parsing with aliases and `:` `-` `=` separators; locked-list matching
+- Noise filter, matched against the whole message only
+- Reply handling: field updates with before/after preserved in remarks
+- Held leads (no mention, several mentions, unknown employee) surfaced in the panel
+- Duplicate handling that reports where the existing lead actually stands, and holds
+  rather than appends when that lead is already finished
+- Retry worker with exponential backoff, covering leads and updates
 
-### Phase 3 — Pipeline
-- [ ] Phone normalisation + the last-10-digit matcher, with tests
-- [ ] Parser behind a swappable interface (so decision 2 is reversible)
-- [ ] Status vocabulary validation against the ten allowed values
-- [ ] Dedupe
-- [ ] Record non-leads into `skipped_messages` with a reason
-- [ ] Reply handling via quoted message ID → append remark
+### Way 2 — bank groups
+- Group → bank mapping, with sending forced off
+- Share recording, unknown-number notices posted to our own group
+- Bank conversation captured against the lead-and-bank pair
+- Retry coverage for both
+- **Not built:** interpreting status language, writing `bank_status`
 
-### Phase 4 — Sheet
-- [ ] Auth + bank column discovery from rows 2–3
-- [ ] Find-by-phone across the phone column
-- [ ] Insert new row / update existing row, never touching D–J
-- [ ] Append-only timestamped remarks
-- [ ] Retry worker for `pending` and `failed` rows
-- [ ] Guard: never write a status outside the ten allowed values
+### Reports and commands
+- Daily scheduler — a clock, not an interval, recording the day it last ran
+- Morning summary: yesterday's leads by person, the untouched ones, and follow-ups due
+- Daily Loan MIS: month-to-date per counsellor against a monthly PF target
+- `my leads` and `help`
+- Reassignment, restricted to named numbers, announcing both sides of the move
 
-### Phase 5 — Admin panel
-- [ ] Auth
-- [ ] Connection + QR screen
-- [ ] Groups screen with bank mapping, driven by real group list
-- [ ] Whatever else survives decision 3
+### Direct messages
+- Captured both directions, and synced into the CRM once a day as one remark per chat
+- Optional AI replies via OpenRouter (off by default)
 
-### Phase 6 — Deployment
-- [ ] Confirm how the VM deploy treats `.wwebjs_auth/` and `data/` — **do this
-      before any deploy**, it is the one mistake that costs physical phone access
-- [ ] PM2 config, restart-on-boot
-- [ ] Lock down port 3001 — check whether the panel is currently reachable publicly
-- [ ] Cutover plan from the running v1 on the VM
+### Panel
+- JWT auth; connection/QR, groups, employees, banks, leads, held leads, diagnostics
+- Kill switch for sending; scheduled reports runnable on demand
+
+### Deployment
+- Railway, GitHub-connected, volume-backed. `DEPLOY.md` is current.
 
 ---
 
 ## 8. Environment
 
-- **Production:** GCP VM `34.131.106.13`, PM2. v1 is still running there and still
-  capturing leads. Untouched by this rebuild until cutover.
-- **Local:** this repository, macOS.
-- **Google Sheet:** live, with real lead data. The sheet itself was never at risk
-  during the v1 deletion — it lives in Google's cloud.
+- **Production:** Railway, deployed from `main` on GitHub. Volume holds the WhatsApp
+  session and the database — losing it means re-linking the number by hand.
+- **Local:** this repository, macOS. `npm install` first; `node_modules` is not
+  committed and six test suites fail without it.
+- **Only ever run one copy.** Two processes on one WhatsApp number both process
+  every message and both reply.
 
 ## 9. Open questions to resolve with the owner
 
-1. Are the target groups ones you control, or bank-run? (Decides the number choice.)
-2. Roughly how many messages a day across all monitored groups? (Decides whether
-   AI parsing costs pennies or something worth optimising.)
-3. Do you want to see leads in the panel at all, or is the sheet the only view
-   you actually use?
-4. Is port 3001 on the VM currently open to the internet?
+1. Which bank groups are being monitored, and which bank is each?
+2. Should a bank update ever move a lead's main stage, or only its bank status?
+3. Does the Iconiq Energy DM assistant belong in this service, or its own?
+4. Have the CRM credentials pasted into a chat channel been rotated?
