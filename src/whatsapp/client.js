@@ -107,7 +107,18 @@ class WhatsAppClient extends EventEmitter {
     fs.mkdirSync(config.whatsapp.sessionPath, { recursive: true });
 
     const { state, saveCreds } = await useMultiFileAuthState(config.whatsapp.sessionPath);
-    const hasSession = Boolean(state.creds?.registered);
+
+    // `registered` alone is not a reliable answer to "are we already linked?".
+    // Baileys sets it during pairing-code registration but leaves it false for a
+    // session linked by QR, so a perfectly good restored session reported no
+    // session at all: the log said "link the number to continue" and the panel
+    // showed a QR, three seconds before connecting normally. That invites
+    // someone to scan again "to be safe" — which links a SECOND device, and two
+    // devices on one number both answer every message.
+    //
+    // `me.id` is written once a number is linked and persists with the session,
+    // so it answers the question both paths agree on.
+    const hasSession = Boolean(state.creds?.me?.id || state.creds?.registered);
 
     this.sock = makeWASocket({
       auth: state,

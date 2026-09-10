@@ -108,10 +108,22 @@ Retry worker started (every 60s)
 Admin panel on http://0.0.0.0:8080
 ```
 
-If the session is gone it will say `No saved session — link the number to
-continue` and show a QR in the panel. On a normal deploy it should **not** say
-that. If it does, the volume is not mounted — stop and fix that before scanning,
-or you will be scanning again on the next deploy.
+A restored session logs `Restoring saved WhatsApp session` and reaches
+`connected` within a few seconds. On a normal deploy that is what you should
+see.
+
+**If it says `No saved session — link the number to continue`, do not scan
+straight away.** Check `/health` first:
+
+```bash
+curl https://iconiq-wsp-bot-production.up.railway.app/health
+```
+
+`"whatsapp":"connected"` means the session is fine whatever the log said, and
+scanning would link a **second** device — two devices on one number both answer
+every message, so customers get everything twice. Only scan if it stays
+`awaiting_scan`, which means the session really is gone and the volume is
+probably not mounted.
 
 ---
 
