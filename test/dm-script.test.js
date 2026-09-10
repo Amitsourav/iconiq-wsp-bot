@@ -252,3 +252,89 @@ describe('starting a chat over', () => {
     assert.match(sends[0], /thanks for reaching out to Iconiq Energy/);
   });
 });
+
+describe('a LID mistaken for a phone number never becomes a lead', () => {
+  const { ensureCrmLead } = require('../src/pipeline/dmSync');
+  const LID_CHAT = '79955161551055@lid';
+
+  function fresh() {
+    db.close();
+    for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
+    db.init();
+  }
+
+  test('the migration clears a phone that is really the LID', (t) => {
+    t.after(() => { db.close();
+      for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true }); });
+    fresh();
+
+    // Exactly the shape the old bug left behind.
+    db.get().prepare(`
+      INSERT INTO dm_threads (chat_id, phone, crm_lead_id, captured)
+      VALUES (?, '+79955161551055', 'OLD-LEAD', '{"city":"x"}')
+    `).run(LID_CHAT);
+    // A genuine overseas number on a LID chat must be left alone.
+    db.get().prepare(`
+      INSERT INTO dm_threads (chat_id, phone) VALUES ('12345@lid', '+96569950748')
+    `).run();
+
+    // Re-run the repair the migration performs.
+    db.get().prepare(`
+      UPDATE dm_threads
+      SET phone = NULL, crm_lead_id = NULL, captured = NULL
+      WHERE chat_id LIKE '%@lid' AND phone IS NOT NULL
+        AND replace(replace(phone, '+', ''), ' ', '')
+            = substr(chat_id, 1, instr(chat_id, '@') - 1)
+    `).run();
+
+    assert.equal(db.get().prepare('SELECT phone FROM dm_threads WHERE chat_id = ?')
+      .get(LID_CHAT).phone, null, 'the invented number should be gone');
+    assert.equal(db.get().prepare("SELECT phone FROM dm_threads WHERE chat_id = '12345@lid'")
+      .get().phone, '+96569950748', 'a real overseas number must survive');
+  });
+
+  test('no lead is created from a LID-derived number', async (t) => {
+    t.after(() => { db.close();
+      for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true }); });
+    fresh();
+
+    const created = [];
+    const crm = {
+      configured: true,
+      async findByPhone() { return { status: 'none', lead: null }; },
+      async createLead(f) { created.push(f); return { lead: { id: 'X' }, deferred: {}, dropped: [] }; }
+    };
+
+    db.get().prepare(`
+      INSERT INTO dm_threads (chat_id, phone) VALUES (?, '+79955161551055')
+    `).run(LID_CHAT);
+
+    const result = await ensureCrmLead(crm, repo.dmThreads.byChatId(LID_CHAT));
+
+    assert.equal(result.status, 'no_phone');
+    assert.equal(created.length, 0,
+      'the retry worker must stop rebuilding this lead every time it is deleted');
+  });
+
+  test('a real number on a LID chat still works', async (t) => {
+    t.after(() => { db.close();
+      for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true }); });
+    fresh();
+
+    const created = [];
+    const crm = {
+      configured: true,
+      async findByPhone() { return { status: 'none', lead: null }; },
+      async createLead(f) { created.push(f); return { lead: { id: 'Y' }, deferred: {}, dropped: [] }; }
+    };
+
+    db.get().prepare(`
+      INSERT INTO dm_threads (chat_id, phone) VALUES (?, '+917004428198')
+    `).run(LID_CHAT);
+
+    const result = await ensureCrmLead(crm, repo.dmThreads.byChatId(LID_CHAT));
+
+    assert.equal(result.status, 'ok');
+    assert.equal(created[0].phone, '+917004428198');
+  });
+});

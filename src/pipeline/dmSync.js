@@ -42,6 +42,24 @@ function extractName(rows) {
 }
 
 /**
+ * Whether a thread's phone number is really just its LID.
+ *
+ * Before LIDs were understood, a chat addressed as "79955161551055@lid" had
+ * those digits read as a phone number and stored as "+79955161551055" — a
+ * plausible-looking foreign number that belongs to nobody. Extraction no longer
+ * does that, but threads written earlier still hold one, and it is not
+ * something a person would spot: it looks like a real number.
+ *
+ * @param {{ chat_id: string, phone: string|null }} thread
+ * @returns {boolean}
+ */
+function isLidDerived(thread) {
+  if (!thread?.phone || !String(thread.chat_id || '').endsWith('@lid')) return false;
+  const lidDigits = String(thread.chat_id).split('@')[0];
+  return String(thread.phone).replace(/\D/g, '') === lidDigits;
+}
+
+/**
  * Find or create the CRM lead for a DM chat, and remember it on the thread.
  *
  * Shared by two callers on purpose: the orchestrator calls it the moment someone
@@ -65,6 +83,17 @@ async function ensureCrmLead(crm, thread, name) {
   // Without a number there is nothing to deduplicate against, and creating a
   // lead that can never be matched to anything is worse than waiting.
   if (!thread.phone) return { status: 'no_phone', leadId: null };
+
+  // A number that is just the chat's LID with a plus in front is not a phone
+  // number — it is the LID bug's leftovers. Threads written before that was
+  // fixed still carry one, and the retry worker will happily rebuild a lead
+  // from it every time the old one is deleted. Treat it as no number at all,
+  // so the chat surfaces for a human instead of manufacturing "+7995…" again.
+  if (isLidDerived(thread)) {
+    logger.warn(`${thread.chat_id} has a phone taken from its LID `
+      + `(${thread.phone}) — not a real number, so no lead. It needs attention.`);
+    return { status: 'no_phone', leadId: null };
+  }
 
   const match = await crm.findByPhone(thread.phone);
 

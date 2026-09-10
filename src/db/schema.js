@@ -347,6 +347,31 @@ const MIGRATIONS = [
       ALTER TABLE dm_threads ADD COLUMN captured TEXT;
     `
   }
+  ,{
+    name: '007_clear_lid_derived_phones',
+    sql: `
+      -- Repair chats whose "phone number" is really their LID.
+      --
+      -- A chat addressed as "79955161551055@lid" had those digits read as a
+      -- phone number and stored as "+79955161551055" — a foreign-looking number
+      -- that belongs to nobody and can never be dialled or deduplicated.
+      -- Extraction no longer does this, but the rows written before it was
+      -- understood are still here, and the retry worker rebuilds a lead from
+      -- one every time the bogus lead is deleted.
+      --
+      -- Clearing the number puts the chat where it belongs: listed under
+      -- "chats with no phone number", for a person to look at. The CRM lead id
+      -- goes with it, because the lead it points at was created under the
+      -- invented number.
+      UPDATE dm_threads
+      SET phone = NULL, crm_lead_id = NULL, captured = NULL, status = 'pending',
+          updated_at = datetime('now')
+      WHERE chat_id LIKE '%@lid'
+        AND phone IS NOT NULL
+        AND replace(replace(phone, '+', ''), ' ', '')
+            = substr(chat_id, 1, instr(chat_id, '@') - 1);
+    `
+  }
 ];
 
 module.exports = { MIGRATIONS };
