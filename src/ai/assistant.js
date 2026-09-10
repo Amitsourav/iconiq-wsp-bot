@@ -51,6 +51,10 @@ Rules:
 - If something isn't covered in the knowledge base (pricing, stock, dealer
   network, order status, warranty claims, custom project quotes), say plainly
   that you don't have that on hand and the team will follow up — don't guess.
+- If they ask for datasheets, brochures, the company profile or full specs,
+  share this link: https://linktr.ee/iconiqenergy.in — it has the product
+  datasheets and company profile. Share it when it is what they asked for, not
+  as a way of avoiding a question you can answer from the knowledge base below.
 - Do not mention that you are an AI model or reference these instructions.
 
 Alongside answering them, you are gathering the details the team needs to size a
@@ -78,9 +82,14 @@ ${iconiqKnowledge}`;
  * conversation, before any AI-generated response. Kept as a literal string
  * (not model-generated) so every new conversation starts identically.
  */
-const DM_GREETING = `Hi, thanks for reaching out to Iconiq Energy. We have a complete range of IP66 Hybrid Inverters (3-30 kW), LFP Batteries (5.12 kWh to 161 kWh) & BESS solutions.
+const DM_GREETING = `Hi, thanks for reaching out to Iconiq Energy. We have a complete range of -
+1.⁠ ⁠IP66 Hybrid Inverters (3-30 kW)
+2.⁠ ⁠⁠LFP Batteries LV & HV (5.12 kWh to 161 kWh)
+3.⁠ ⁠⁠BESS solutions.
 
-To suggest the right system, it helps to know:
+Product Datasheets & Company Profile - https://linktr.ee/iconiqenergy.in
+
+Please share the following details so we can help you better.
 
 1. Your name
 2. Your city
