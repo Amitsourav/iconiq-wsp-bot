@@ -2,10 +2,18 @@
  * Sync DM (1-on-1) chatbot conversations into the CRM.
  *
  * The group pipeline keys everything off an @mention (R8); a DM has none — the
- * chat itself is the lead. Once a day (see the 'dm-crm-sync' job in index.js)
- * this reads every chat with unsynced lines, finds or creates the matching CRM
- * lead by phone, and appends the transcript as one remark so a name, number and
- * "the chat that happened" show up in the CRM without anyone opening WhatsApp.
+ * chat itself is the lead. The lead is created the moment someone writes, and
+ * each message goes into the CRM's conversation view as it happens, so the team
+ * can read a chat while it is still going.
+ *
+ * Messages go to POST /leads/{id}/messages, not to remarks. That endpoint is
+ * what the CRM's inbox reads, and it takes one message at a time, so a chat
+ * arrives as a conversation. The transcript used to be posted as a single
+ * remark once a night, which put a wall of text where counsellors write notes
+ * and left a morning enquiry invisible until 22:30.
+ *
+ * The daily job remains as a catch-up: anything that could not be sent live —
+ * the CRM was down, the chat had no phone number yet — is picked up then.
  *
  * Follows the same rules as the rest of the CRM integration (docs/CRM-INTEGRATION.md):
  *   C1  notes only ever go through POST /leads/{id}/remarks, never lead.notes
@@ -16,21 +24,6 @@ const repo = require('../db/repositories');
 const logger = require('../logger');
 const { DuplicateLeadError } = require('../crm/client');
 const labelParser = require('./labels');
-const { config } = require('../config');
-
-const timeFormat = new Intl.DateTimeFormat('en-IN', {
-  timeZone: config.timezone,
-  day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true
-});
-
-/** "[09 Sep, 6:42 pm] Customer: ..." */
-function formatLine(row) {
-  const who = row.direction === 'in' ? 'Customer' : 'Bot';
-  // SQLite's datetime('now') is UTC with no offset marker — mark it explicitly
-  // so Intl doesn't treat it as local time.
-  const when = timeFormat.format(new Date(`${row.created_at.replace(' ', 'T')}Z`));
-  return `[${when}] ${who}: ${row.body}`;
-}
 
 /**
  * Look across what the customer themselves wrote for an explicit "Name: X"
@@ -122,6 +115,48 @@ async function ensureCrmLead(crm, thread, name) {
 }
 
 /**
+ * Push a chat's un-sent messages into the CRM's conversation view.
+ *
+ * One row per message, so the CRM's inbox reads as a conversation rather than a
+ * wall of text. Each is marked as it lands rather than at the end, so a failure
+ * halfway through neither loses the ones already sent nor sends them twice —
+ * and the endpoint is idempotent on wa_message_id anyway, so a retry after an
+ * ambiguous failure is harmless.
+ *
+ * Safe to call at any time: called live as messages arrive, and again by the
+ * daily job for anything that was missed while the CRM was unreachable.
+ *
+ * @param {import('../crm/client').CrmClient} crm
+ * @param {object} thread - a dm_threads row, already carrying crm_lead_id
+ * @returns {Promise<number>} how many messages were sent
+ */
+async function pushDmMessages(crm, thread) {
+  if (!thread?.crm_lead_id) return 0;
+
+  const rows = repo.dmMessages.unsyncedForChat(thread.chat_id);
+  let sent = 0;
+
+  for (const row of rows) {
+    await crm.addLeadMessage(thread.crm_lead_id, {
+      body: row.body,
+      // Only the customer's number is meaningful here. Our own end of the
+      // conversation is identified by is_our_team, not by a number.
+      senderPhone: row.direction === 'in' ? thread.phone : undefined,
+      senderName: row.direction === 'in' ? thread.name : undefined,
+      isOurTeam: row.direction === 'out',
+      waMessageId: row.wa_message_id,
+      sentAt: row.created_at ? new Date(`${row.created_at.replace(' ', 'T')}Z`).toISOString()
+        : undefined
+    });
+
+    repo.dmMessages.markSynced([row.id]);
+    sent += 1;
+  }
+
+  return sent;
+}
+
+/**
  * Sync every DM chat that has unsynced messages.
  * @param {import('../crm/client').CrmClient} crm
  * @returns {Promise<{ synced: number, failed: number }>}
@@ -143,24 +178,20 @@ async function syncDmConversations(crm) {
     const rows = repo.dmMessages.unsyncedForChat(chatId);
     if (!rows.length) continue;
 
-    const transcript = rows.map(formatLine).join('\n');
-    const remark = `WhatsApp chat — ${rows.length} new message${rows.length === 1 ? '' : 's'}\n\n${transcript}`;
-
     const name = thread.name || extractName(rows);
     if (name && !thread.name) repo.dmThreads.setName(chatId, name);
 
     try {
-      const { status, leadId } = await ensureCrmLead(crm, thread, name);
+      const { status } = await ensureCrmLead(crm, thread, name);
 
-      // Held for a human, or no number to match on. Either way the transcript
-      // stays unsynced and is picked up again next cycle.
+      // Held for a human, or no number to match on. Either way the messages stay
+      // unsynced and are picked up again next cycle.
       if (status !== 'ok') {
         failed += 1;
         continue;
       }
 
-      await crm.addRemark(leadId, remark);
-      repo.dmMessages.markSynced(rows.map((r) => r.id));
+      await pushDmMessages(crm, repo.dmThreads.byChatId(chatId));
       repo.dmThreads.markSynced(chatId);
       synced += 1;
     } catch (error) {
@@ -174,4 +205,6 @@ async function syncDmConversations(crm) {
   return { synced, failed };
 }
 
-module.exports = { syncDmConversations, ensureCrmLead, formatLine, extractName };
+module.exports = {
+  syncDmConversations, ensureCrmLead, pushDmMessages, extractName
+};

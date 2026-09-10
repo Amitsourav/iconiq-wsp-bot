@@ -441,6 +441,40 @@ class CrmClient {
   }
 
   /**
+   * Add one message to a lead's WhatsApp conversation.
+   *
+   * This is what feeds the CRM's inbox — `GET /leads/messages/conversations`
+   * reads these — and it is where a chat belongs. Remarks are for notes a
+   * counsellor writes; a transcript posted there arrives as one wall of text
+   * once a day and cannot be read as a conversation.
+   *
+   * Sent one message at a time, as it happens, because an inbox that updates
+   * tomorrow is not an inbox.
+   *
+   * Idempotent on `wa_message_id`, which is what makes it safe to retry: the
+   * same message replayed after a reconnect does not appear twice in the
+   * conversation.
+   *
+   * @param {string} leadId
+   * @param {{ body: string, senderPhone?: string, senderName?: string,
+   *           isOurTeam?: boolean, waMessageId: string, sentAt?: string }} message
+   * @returns {Promise<Object>}
+   */
+  async addLeadMessage(leadId, message) {
+    const body = String(message.body || '').trim();
+    if (!body) throw new CrmError('Message body is empty');
+
+    return this.request('POST', `/leads/${leadId}/messages`, {
+      body: body.slice(0, 5000),
+      sender_phone: message.senderPhone || undefined,
+      sender_name: message.senderName || undefined,
+      is_our_team: Boolean(message.isOurTeam),
+      wa_message_id: message.waMessageId,
+      sent_at: message.sentAt || undefined
+    });
+  }
+
+  /**
    * Record that a lead was shared into a bank's WhatsApp group.
    *
    * Idempotent on (lead, bank): sharing the same lead to the same bank again

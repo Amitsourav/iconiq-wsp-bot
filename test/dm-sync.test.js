@@ -9,14 +9,14 @@ process.env.DB_PATH = TEST_DB;
 const db = require('../src/db');
 const repo = require('../src/db/repositories');
 const { DuplicateLeadError } = require('../src/crm/client');
-const { syncDmConversations, formatLine, extractName } = require('../src/pipeline/dmSync');
+const { syncDmConversations, extractName } = require('../src/pipeline/dmSync');
 
 const CHAT = '919812345678@s.whatsapp.net';
 const PHONE = '+919812345678';
 
 /** A CRM double that records every call it receives. */
 function fakeCrm(overrides = {}) {
-  const calls = { findByPhone: [], createLead: [], addRemark: [] };
+  const calls = { findByPhone: [], createLead: [], addRemark: [], addLeadMessage: [] };
   return {
     configured: true,
     calls,
@@ -34,6 +34,13 @@ function fakeCrm(overrides = {}) {
     async addRemark(leadId, text) {
       calls.addRemark.push({ leadId, text });
       if (overrides.addRemark) return overrides.addRemark(leadId, text);
+      return {};
+    },
+    // A chat now goes to the CRM's conversation view, one message at a time,
+    // rather than being flattened into a single remark.
+    async addLeadMessage(leadId, message) {
+      calls.addLeadMessage.push({ leadId, ...message });
+      if (overrides.addLeadMessage) return overrides.addLeadMessage(leadId, message);
       return {};
     }
   };
@@ -88,14 +95,6 @@ describe('dm_messages repository', () => {
   });
 });
 
-describe('formatLine', () => {
-  test('labels the customer and the bot distinctly', () => {
-    const row = { direction: 'in', body: 'hi', created_at: '2026-09-09 11:15:06' };
-    assert.match(formatLine(row), /Customer: hi$/);
-    assert.match(formatLine({ ...row, direction: 'out' }), /Bot: hi$/);
-  });
-});
-
 describe('extractName', () => {
   test('reads an explicit "Name:" label from the customer, never the bot', () => {
     const rows = [
@@ -112,7 +111,7 @@ describe('extractName', () => {
 });
 
 describe('syncDmConversations', () => {
-  test('creates a lead (unassigned) and posts the transcript as one remark', async () => {
+  test('creates a lead (unassigned) and puts every message in the conversation view', async () => {
     seedMessages(CHAT, [
       ['in', 'Hi, tell me about your batteries'],
       ['out', 'Sure — we have 5.12 kWh to 161 kWh LFP options'],
@@ -128,10 +127,16 @@ describe('syncDmConversations', () => {
     assert.equal(crm.calls.createLead[0].phone, PHONE);
     assert.equal(crm.calls.createLead[0].assigned_agent_id, undefined);
 
-    assert.equal(crm.calls.addRemark.length, 1);
-    assert.equal(crm.calls.addRemark[0].leadId, 'new-lead-id');
-    assert.match(crm.calls.addRemark[0].text, /Hi, tell me about your batteries/);
-    assert.match(crm.calls.addRemark[0].text, /5\.12 kWh to 161 kWh/);
+    // Each line of the chat is its own message, so the CRM inbox reads as a
+    // conversation and shows who said what.
+    const sent = crm.calls.addLeadMessage;
+    assert.ok(sent.length >= 2, 'every message should reach the conversation view');
+    assert.ok(sent.every((m) => m.leadId === 'new-lead-id'));
+    assert.ok(sent.some((m) => /Hi, tell me about your batteries/.test(m.body)
+      && m.isOurTeam === false));
+    assert.ok(sent.some((m) => /5\.12 kWh to 161 kWh/.test(m.body) && m.isOurTeam === true));
+    // wa_message_id is what makes a retry harmless.
+    assert.ok(sent.every((m) => m.waMessageId));
 
     const thread = repo.dmThreads.byChatId(CHAT);
     assert.equal(thread.status, 'synced');
@@ -155,7 +160,7 @@ describe('syncDmConversations', () => {
     await syncDmConversations(crm);
 
     assert.equal(crm.calls.createLead.length, 0);
-    assert.equal(crm.calls.addRemark[0].leadId, 'existing-lead');
+    assert.equal(crm.calls.addLeadMessage[0].leadId, 'existing-lead');
     assert.equal(repo.dmThreads.byChatId(CHAT).crm_lead_id, 'existing-lead');
   });
 
@@ -168,7 +173,7 @@ describe('syncDmConversations', () => {
 
     assert.equal(crm.calls.findByPhone.length, 0);
     assert.equal(crm.calls.createLead.length, 0);
-    assert.equal(crm.calls.addRemark[0].leadId, 'already-linked');
+    assert.equal(crm.calls.addLeadMessage[0].leadId, 'already-linked');
   });
 
   test('C5 — an ambiguous phone match is held, never guessed', async () => {
@@ -181,7 +186,7 @@ describe('syncDmConversations', () => {
 
     assert.deepEqual(result, { synced: 0, failed: 1 });
     assert.equal(crm.calls.createLead.length, 0);
-    assert.equal(crm.calls.addRemark.length, 0);
+    assert.equal(crm.calls.addLeadMessage.length, 0);
 
     const thread = repo.dmThreads.byChatId(CHAT);
     assert.equal(thread.status, 'ambiguous');
@@ -197,7 +202,7 @@ describe('syncDmConversations', () => {
       createLead: async () => {
         throw new DuplicateLeadError({ existing_lead_id: 'dup-lead', existing_lead_name: 'X' });
       },
-      addRemark: async (leadId) => {
+      addLeadMessage: async (leadId) => {
         attempt += 1;
         return { leadId };
       }
@@ -207,7 +212,7 @@ describe('syncDmConversations', () => {
 
     assert.deepEqual(result, { synced: 1, failed: 0 });
     assert.equal(attempt, 1);
-    assert.equal(crm.calls.addRemark[0].leadId, 'dup-lead');
+    assert.equal(crm.calls.addLeadMessage[0].leadId, 'dup-lead');
     assert.equal(repo.dmThreads.byChatId(CHAT).crm_lead_id, 'dup-lead');
   });
 

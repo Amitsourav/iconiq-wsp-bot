@@ -24,7 +24,7 @@ const { replies } = require('./replies');
 const { LOCKED_LISTS } = require('../crm/fields');
 const commands = require('./commands');
 const { buildMyLeads } = require('./digest');
-const { ensureCrmLead } = require('./dmSync');
+const { ensureCrmLead, pushDmMessages } = require('./dmSync');
 const { BankHandler } = require('./bank');
 const { DuplicateLeadError, CrmClient } = require('../crm/client');
 const repo = require('../db/repositories');
@@ -812,6 +812,13 @@ class Orchestrator {
 
       if (status === 'ok') {
         logger.info(`DM lead ready: ${thread.phone || chatId} → ${leadId}`);
+
+        // Straight into the CRM's conversation view, as it happens. Anything
+        // that fails here stays unsynced and the daily job picks it up, so a
+        // CRM hiccup delays the inbox rather than losing the conversation.
+        await pushDmMessages(this.crm, repo.dmThreads.byChatId(chatId))
+          .catch((error) => logger.warn(
+            `Chat messages not sent to the CRM yet for ${chatId}: ${error.message}`));
         return;
       }
 
