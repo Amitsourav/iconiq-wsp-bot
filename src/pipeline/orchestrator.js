@@ -92,6 +92,25 @@ class Orchestrator {
   }
 
   /**
+   * Wait for everything queued to finish.
+   *
+   * The CRM half of handling a message runs on its own queue rather than being
+   * awaited by the caller, which is what keeps replies quick. Tests and the
+   * shutdown path need a way to wait for it to drain.
+   *
+   * @returns {Promise<void>}
+   */
+  async settled() {
+    // Each pass may queue more work, so drain until nothing is left. The yield
+    // matters: a finished queue clears itself in a .then(), and without giving
+    // that a turn to run this spins on an entry that has already resolved.
+    while (this.chatQueues.size) {
+      await Promise.all([...this.chatQueues.values()]);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  }
+
+  /**
    * Entry point for every incoming group message.
    * @param {object} message - normalised by whatsapp/messages.js
    * @param {object} [rawMessage] - the original, needed to quote it in a reply
@@ -825,11 +844,24 @@ class Orchestrator {
       // conversation is already safe in our database by this point, so nothing
       // is at risk in doing the slow half afterwards.
       await this.replyToDm(message, rawMessage, text);
-      await this.ensureDmLead(message.chatId);
-      // Every message, not just the first: the conversation view has to keep up
-      // with the conversation.
-      await this.syncDmToCrm(message.chatId);
-      await this.captureDmFields(message.chatId);
+
+      // The CRM half runs on its own queue for this chat, so it is still done
+      // strictly in order but the customer's NEXT reply does not wait for it.
+      //
+      // Only sending has to be serialised — two sends at once desync the
+      // conversation's encryption. Writing to the CRM does not touch WhatsApp,
+      // and it is the slow part: a lead create, the messages, then a second
+      // model call to read the details out. Measured against the live services
+      // that is ten seconds or more, and holding the next reply behind it meant
+      // someone sending five quick messages waited a minute for the last one.
+      this.serialise(`crm:${message.chatId}`, async () => {
+        await this.ensureDmLead(message.chatId);
+        // Every message, not just the first: the conversation view has to keep
+        // up with the conversation.
+        await this.syncDmToCrm(message.chatId);
+        await this.captureDmFields(message.chatId);
+      }).catch((error) => logger.error(
+        `CRM work failed for ${message.chatId}: ${error.message}`));
     } catch (error) {
       logger.error(`Direct-message handling failed on ${message?.id}: ${error.message}`);
     }

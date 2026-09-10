@@ -616,3 +616,95 @@ describe('the conversation view keeps up with the conversation', () => {
     assert.deepEqual(sent, ['Hi']);
   });
 });
+
+describe('a reply is not held up by the CRM', () => {
+  const { Orchestrator } = require('../src/pipeline/orchestrator');
+  const { normalise } = require('../src/whatsapp/messages');
+  const CHAT4 = '919000000044@s.whatsapp.net';
+
+  beforeEach(() => {
+    db.close();
+    for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
+    db.init();
+  });
+
+  test('the next reply goes out while the CRM work is still running', async (t) => {
+    // Replies are off by default in tests, and the second turn would otherwise
+    // make a real model call.
+    const { config } = require('../src/config');
+    const openrouter = require('../src/ai/openrouter');
+    const before = { ...config.ai };
+    config.ai.enabled = true;
+    config.ai.replyInDms = true;
+    config.ai.extractFields = false;
+    mock.method(openrouter, 'chat', async () => 'ok');
+    t.after(() => { Object.assign(config.ai, before); mock.restoreAll(); });
+
+    // Only sending has to be ordered — two sends at once desync the chat's
+    // encryption. The CRM is the slow part and touches nothing WhatsApp knows
+    // about, so holding the next reply behind it just made customers wait.
+    let crmBusy = 0;
+    let sawSendDuringCrmWork = false;
+
+    const crm = {
+      configured: true,
+      async findByPhone() { return { status: 'none', lead: null }; },
+      async createLead() {
+        crmBusy += 1;
+        await new Promise((r) => setTimeout(r, 60));
+        crmBusy -= 1;
+        return { lead: { id: 'L1' }, deferred: {}, dropped: [] };
+      },
+      async addLeadMessage() { return {}; },
+      async updateLead() { return { lead: null, dropped: [] }; }
+    };
+
+    const whatsapp = {
+      selfPhone: '919821152633',
+      async reply() {
+        if (crmBusy > 0) sawSendDuringCrmWork = true;
+        return true;
+      }
+    };
+
+    const o = new Orchestrator({ crm, whatsapp });
+    const say = (id, text) => normalise({
+      key: { id, remoteJid: CHAT4, fromMe: false },
+      message: { conversation: text }, messageTimestamp: 1
+    });
+
+    await o.handleDirect(say('n1', 'Hi'));
+    await o.handleDirect(say('n2', 'anyone there?'));
+    await o.settled();
+
+    assert.equal(sawSendDuringCrmWork, true,
+      'a reply should be able to go out while the CRM is still being written');
+  });
+
+  test('settled() waits for the background work', async (t) => {
+    const { config } = require('../src/config');
+    const before = { ...config.ai };
+    config.ai.enabled = true;
+    config.ai.replyInDms = true;
+    config.ai.extractFields = false;
+    t.after(() => Object.assign(config.ai, before));
+
+    const created = [];
+    const crm = {
+      configured: true,
+      async findByPhone() { return { status: 'none', lead: null }; },
+      async createLead(f) { created.push(f); return { lead: { id: 'L1' }, deferred: {}, dropped: [] }; },
+      async addLeadMessage() { return {}; },
+      async updateLead() { return { lead: null, dropped: [] }; }
+    };
+    const o = new Orchestrator({ crm, whatsapp: { async reply() { return true; } } });
+
+    await o.handleDirect(normalise({
+      key: { id: 'n3', remoteJid: '919000000045@s.whatsapp.net', fromMe: false },
+      message: { conversation: 'Hi' }, messageTimestamp: 1
+    }));
+    await o.settled();
+
+    assert.equal(created.length, 1, 'the lead should exist once settled() returns');
+  });
+});
