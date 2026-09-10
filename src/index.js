@@ -238,7 +238,7 @@ async function main() {
   // customer, carrying their name, phone, and the transcript since the last
   // sync — so the team can see what a chat covered without opening WhatsApp.
   // Exposed via jobs too, so the panel can trigger it on demand.
-  jobs['dm-crm-sync'] = () => syncDmConversations(crm);
+  jobs['dm-crm-sync'] = () => syncDmConversations(crm, { selfPhone: whatsapp.selfPhone });
 
   const dmSync = new DailyScheduler({
     name: 'dm-crm-sync',

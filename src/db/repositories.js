@@ -459,11 +459,35 @@ const dmThreads = {
     return this.byChatId(chatId);
   },
 
+  /**
+   * Set the name we know this person by. Overwrites — used for a name they
+   * actually stated, which outranks anything we guessed or read off a profile.
+   */
   setName(chatId, name) {
     if (!name) return;
     get().prepare(`
       UPDATE dm_threads SET name = ?, updated_at = datetime('now') WHERE chat_id = ?
     `).run(name, chatId);
+  },
+
+  /**
+   * Fill the name only if we have none.
+   *
+   * For a WhatsApp profile name, which is whatever the person set for
+   * themselves. Better than calling a lead by its phone number, but it must
+   * never displace a name they gave us in conversation — and their profile name
+   * arrives on every message, so an overwriting version would undo the good
+   * name on the very next one.
+   *
+   * @returns {boolean} whether this is what filled it in
+   */
+  setNameIfBlank(chatId, name) {
+    if (!name) return false;
+    const result = get().prepare(`
+      UPDATE dm_threads SET name = ?, updated_at = datetime('now')
+      WHERE chat_id = ? AND (name IS NULL OR name = '')
+    `).run(name, chatId);
+    return result.changes > 0;
   },
 
   setCrmLead(chatId, crmLeadId) {

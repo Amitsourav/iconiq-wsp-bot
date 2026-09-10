@@ -738,6 +738,12 @@ class Orchestrator {
       repo.dmThreads.upsert(message.chatId, phone);
       this.recordDmMessage(message.chatId, 'in', text, message.id);
 
+      // Their WhatsApp profile name, so the lead is called something a person
+      // recognises rather than its own number. Only ever fills a blank — a name
+      // they actually told us in conversation is better, and must not be
+      // overwritten by a profile name on a later message.
+      if (message.pushName) repo.dmThreads.setNameIfBlank(message.chatId, message.pushName);
+
       // A LID-addressed chat often arrives with no number on the first message
       // and one on a later message, so every message is a fresh chance to
       // identify who we are talking to. The moment it lands, ensureDmLead below
@@ -816,7 +822,8 @@ class Orchestrator {
         // Straight into the CRM's conversation view, as it happens. Anything
         // that fails here stays unsynced and the daily job picks it up, so a
         // CRM hiccup delays the inbox rather than losing the conversation.
-        await pushDmMessages(this.crm, repo.dmThreads.byChatId(chatId))
+        await pushDmMessages(this.crm, repo.dmThreads.byChatId(chatId),
+          { selfPhone: this.whatsapp?.selfPhone })
           .catch((error) => logger.warn(
             `Chat messages not sent to the CRM yet for ${chatId}: ${error.message}`));
         return;

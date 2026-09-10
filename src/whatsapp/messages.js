@@ -112,6 +112,16 @@ function normalise(raw) {
     // True only when we are still holding a LID with no number beside it —
     // senderPnJid above resolves the common case without a lookup.
     senderIsLid: Boolean(senderJid && phone.isLid(senderJid)),
+    /**
+     * The sender's WhatsApp profile name.
+     *
+     * Whatever they set for themselves, so it is not proof of identity and
+     * never fills a structured field on its own. But it is a far better thing
+     * to call a lead than its own phone number, which is what the CRM was
+     * filling up with — "a list of phone numbers", as their team put it. A real
+     * name stated in conversation replaces it later.
+     */
+    pushName: raw.pushName || null,
     text: textOf(unwrap(raw.message)),
     mentions: [...new Set(mentions)],
     mentionJids,

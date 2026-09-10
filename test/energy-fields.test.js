@@ -407,3 +407,78 @@ describe('a chat we cannot identify is visible, and recovers on its own', () => 
       'a chat that just became identifiable should be queued for a lead');
   });
 });
+
+describe('a lead is named, not just numbered', () => {
+  const { normalise } = require('../src/whatsapp/messages');
+  const CHAT2 = '919812345111@s.whatsapp.net';
+
+  beforeEach(() => {
+    db.close();
+    for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
+    db.init();
+  });
+
+  test('the WhatsApp profile name is read off the message', () => {
+    const m = normalise({
+      key: { id: 'p1', remoteJid: CHAT2, fromMe: false },
+      pushName: 'Suresh Menon',
+      message: { conversation: 'hi' },
+      messageTimestamp: 1
+    });
+    assert.equal(m.pushName, 'Suresh Menon');
+  });
+
+  test('a profile name fills a blank', () => {
+    repo.dmThreads.upsert(CHAT2, '+919812345111');
+    assert.equal(repo.dmThreads.setNameIfBlank(CHAT2, 'Suresh Menon'), true);
+    assert.equal(repo.dmThreads.byChatId(CHAT2).name, 'Suresh Menon');
+  });
+
+  test('a profile name never displaces a name they actually gave us', () => {
+    // The profile name arrives on every single message, so an overwriting
+    // version would undo the good name on the very next one.
+    repo.dmThreads.upsert(CHAT2, '+919812345111');
+    repo.dmThreads.setName(CHAT2, 'Suresh Menon');
+
+    assert.equal(repo.dmThreads.setNameIfBlank(CHAT2, '😎 King'), false);
+    assert.equal(repo.dmThreads.byChatId(CHAT2).name, 'Suresh Menon');
+  });
+
+  test('a stated name does replace a profile name', () => {
+    repo.dmThreads.upsert(CHAT2, '+919812345111');
+    repo.dmThreads.setNameIfBlank(CHAT2, '😎 King');
+    repo.dmThreads.setName(CHAT2, 'Suresh Menon');
+    assert.equal(repo.dmThreads.byChatId(CHAT2).name, 'Suresh Menon');
+  });
+
+  test('the lead is created under the name, not the phone number', async () => {
+    const created = [];
+    const crm = {
+      configured: true,
+      async findByPhone() { return { status: 'none', lead: null }; },
+      async createLead(f) { created.push(f); return { lead: { id: 'l1' }, deferred: {}, dropped: [] }; }
+    };
+
+    repo.dmThreads.upsert(CHAT2, '+919812345111');
+    repo.dmThreads.setNameIfBlank(CHAT2, 'Suresh Menon');
+
+    await ensureCrmLead(crm, repo.dmThreads.byChatId(CHAT2));
+
+    assert.equal(created[0].full_name, 'Suresh Menon',
+      'the CRM should not become a list of phone numbers');
+  });
+
+  test('still falls back to the number when nobody has a name', async () => {
+    const created = [];
+    const crm = {
+      configured: true,
+      async findByPhone() { return { status: 'none', lead: null }; },
+      async createLead(f) { created.push(f); return { lead: { id: 'l2' }, deferred: {}, dropped: [] }; }
+    };
+
+    repo.dmThreads.upsert(CHAT2, '+919812345111');
+    await ensureCrmLead(crm, repo.dmThreads.byChatId(CHAT2));
+
+    assert.equal(created[0].full_name, '+919812345111');
+  });
+});

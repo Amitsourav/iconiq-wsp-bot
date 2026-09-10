@@ -130,19 +130,21 @@ async function ensureCrmLead(crm, thread, name) {
  * @param {object} thread - a dm_threads row, already carrying crm_lead_id
  * @returns {Promise<number>} how many messages were sent
  */
-async function pushDmMessages(crm, thread) {
+async function pushDmMessages(crm, thread, { selfPhone } = {}) {
   if (!thread?.crm_lead_id) return 0;
 
   const rows = repo.dmMessages.unsyncedForChat(thread.chat_id);
   let sent = 0;
 
+  // The bot's own number, so both halves of the conversation say where they
+  // came from. Stored without a "+" by WhatsApp.
+  const ourPhone = selfPhone ? `+${String(selfPhone).replace(/^\+/, '')}` : undefined;
+
   for (const row of rows) {
     await crm.addLeadMessage(thread.crm_lead_id, {
       body: row.body,
-      // Only the customer's number is meaningful here. Our own end of the
-      // conversation is identified by is_our_team, not by a number.
-      senderPhone: row.direction === 'in' ? thread.phone : undefined,
-      senderName: row.direction === 'in' ? thread.name : undefined,
+      senderPhone: row.direction === 'in' ? thread.phone : ourPhone,
+      senderName: row.direction === 'in' ? thread.name : 'Iconiq Energy',
       isOurTeam: row.direction === 'out',
       waMessageId: row.wa_message_id,
       sentAt: row.created_at ? new Date(`${row.created_at.replace(' ', 'T')}Z`).toISOString()
@@ -161,7 +163,7 @@ async function pushDmMessages(crm, thread) {
  * @param {import('../crm/client').CrmClient} crm
  * @returns {Promise<{ synced: number, failed: number }>}
  */
-async function syncDmConversations(crm) {
+async function syncDmConversations(crm, { selfPhone } = {}) {
   if (!crm.configured) {
     logger.warn('CRM not configured — DM conversations are captured but not synced');
     return { synced: 0, failed: 0 };
@@ -191,7 +193,7 @@ async function syncDmConversations(crm) {
         continue;
       }
 
-      await pushDmMessages(crm, repo.dmThreads.byChatId(chatId));
+      await pushDmMessages(crm, repo.dmThreads.byChatId(chatId), { selfPhone });
       repo.dmThreads.markSynced(chatId);
       synced += 1;
     } catch (error) {
