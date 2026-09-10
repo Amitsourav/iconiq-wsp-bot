@@ -46,6 +46,9 @@ const MAX_ATTEMPTS = 8;
 const AI_UNAVAILABLE_REPLY =
   'Thanks for your message. Our team will get back to you shortly.';
 
+/** Wait, skipping the timer entirely when the delay is off. */
+const pause = (ms) => (ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : null);
+
 class Orchestrator {
   /**
    * @param {{ crm: import('../crm/client').CrmClient, whatsapp: object }} deps
@@ -908,6 +911,13 @@ class Orchestrator {
    */
   async sendDmParts(message, rawMessage, parts) {
     for (const [index, part] of parts.entries()) {
+      // Never answer instantly. WhatsApp needs a moment to settle the session
+      // for the message it just delivered, and replying inside that window is
+      // what left the third message unreadable on the customer's phone — it
+      // only appeared once the script replaced the model, because the model's
+      // own thinking time had been providing this pause by accident.
+      await pause(index === 0 ? config.ai.replyDelayMs : config.ai.replyGapMs);
+
       const sent = await this.whatsapp.reply({
         // replyTo, not chatId: a chat addressed by LID must be answered on the
         // sender's phone JID, or the reply is accepted without error and never

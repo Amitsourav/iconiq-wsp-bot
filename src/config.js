@@ -183,6 +183,30 @@ const config = {
     dmMode: (process.env.DM_MODE || 'script').toLowerCase() === 'ai' ? 'ai' : 'script',
 
     /**
+     * How long to wait before answering a direct message, in milliseconds.
+     *
+     * Replying the instant a message is decrypted is too fast for WhatsApp.
+     * Seen live: with the model writing the replies there was a natural five to
+     * ten second pause and every message arrived; with the fixed script, which
+     * answers in microseconds, the third message consistently landed as
+     * "Waiting for this message" — the recipient's phone had not finished
+     * settling the session for the message it had just sent.
+     *
+     * It also reads better. A company that answers in nought seconds is
+     * obviously a machine; a few seconds looks like someone picking up.
+     */
+    replyDelayMs: int(process.env.REPLY_DELAY_MS, 4000),
+
+    /**
+     * The gap between two messages sent one after the other, in milliseconds.
+     *
+     * Shorter than the first delay — they are one thought in two bubbles, so a
+     * long pause between them reads as hesitation — but not zero, for the same
+     * reason as above.
+     */
+    replyGapMs: int(process.env.REPLY_GAP_MS, 1500),
+
+    /**
      * Whether a DM conversation is read for lead details (name, city, load,
      * backup, existing solar/DG) and written into the CRM's fields.
      *

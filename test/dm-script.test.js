@@ -338,3 +338,73 @@ describe('a LID mistaken for a phone number never becomes a lead', () => {
     assert.equal(created[0].phone, '+917004428198');
   });
 });
+
+describe('the bot does not answer instantly', () => {
+  const CHAT_D = '919000000088@s.whatsapp.net';
+
+  test('it waits before the first reply, and between the two', async (t) => {
+    // Replying in microseconds is what left the third message showing
+    // "Waiting for this message": WhatsApp had not finished settling the
+    // session for the message it had just delivered.
+    const before = { mode: config.ai.dmMode, delay: config.ai.replyDelayMs, gap: config.ai.replyGapMs };
+    config.ai.dmMode = 'script';
+    config.ai.replyDelayMs = 120;
+    config.ai.replyGapMs = 60;
+    t.after(() => {
+      config.ai.dmMode = before.mode;
+      config.ai.replyDelayMs = before.delay;
+      config.ai.replyGapMs = before.gap;
+      db.close();
+      for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
+    });
+
+    db.close();
+    for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
+    db.init();
+
+    const at = [];
+    const started = Date.now();
+    const o = new Orchestrator({ crm: { configured: false },
+      whatsapp: { async reply() { at.push(Date.now() - started); return true; } } });
+
+    await o.handleDirect(normalise({
+      key: { id: 'd1', remoteJid: CHAT_D, fromMe: false },
+      message: { conversation: 'Hi' }, messageTimestamp: 1
+    }));
+    await o.settled();
+
+    assert.equal(at.length, 2);
+    assert.ok(at[0] >= 120, `first reply came after ${at[0]}ms, expected a pause`);
+    assert.ok(at[1] - at[0] >= 60, `no gap between the two (${at[1] - at[0]}ms)`);
+  });
+
+  test('a delay of zero sends immediately, for tests and for tuning', async (t) => {
+    const before = { mode: config.ai.dmMode, delay: config.ai.replyDelayMs, gap: config.ai.replyGapMs };
+    config.ai.dmMode = 'script';
+    config.ai.replyDelayMs = 0;
+    config.ai.replyGapMs = 0;
+    t.after(() => {
+      config.ai.dmMode = before.mode;
+      config.ai.replyDelayMs = before.delay;
+      config.ai.replyGapMs = before.gap;
+      db.close();
+      for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
+    });
+
+    db.close();
+    for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
+    db.init();
+
+    const started = Date.now();
+    const o = new Orchestrator({ crm: { configured: false },
+      whatsapp: { async reply() { return true; } } });
+
+    await o.handleDirect(normalise({
+      key: { id: 'd2', remoteJid: CHAT_D, fromMe: false },
+      message: { conversation: 'Hi' }, messageTimestamp: 1
+    }));
+    await o.settled();
+
+    assert.ok(Date.now() - started < 100, 'zero should mean no wait at all');
+  });
+});

@@ -637,6 +637,10 @@ describe('a reply is not held up by the CRM', () => {
     config.ai.enabled = true;
     config.ai.replyInDms = true;
     config.ai.extractFields = false;
+    config.ai.dmMode = 'ai';
+    // This test measures ordering, not the human-pause before a reply.
+    config.ai.replyDelayMs = 0;
+    config.ai.replyGapMs = 0;
     mock.method(openrouter, 'chat', async () => 'ok');
     t.after(() => { Object.assign(config.ai, before); mock.restoreAll(); });
 
@@ -687,6 +691,8 @@ describe('a reply is not held up by the CRM', () => {
     config.ai.enabled = true;
     config.ai.replyInDms = true;
     config.ai.extractFields = false;
+    config.ai.replyDelayMs = 0;
+    config.ai.replyGapMs = 0;
     t.after(() => Object.assign(config.ai, before));
 
     const created = [];
