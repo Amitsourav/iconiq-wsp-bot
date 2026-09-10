@@ -491,6 +491,42 @@ const dmThreads = {
   },
 
   /**
+   * Find a chat by its id or by the number it belongs to.
+   *
+   * A chat addressed by LID has an id nobody can recognise, so the panel has to
+   * accept the number too — that is what a person knows.
+   */
+  find(needle) {
+    const value = String(needle || '').trim();
+    if (!value) return null;
+
+    const digits = value.replace(/\D/g, '');
+    return get().prepare(`
+      SELECT * FROM dm_threads
+      WHERE chat_id = ?
+         OR (? != '' AND replace(replace(phone, '+', ''), ' ', '') LIKE '%' || ? || '%')
+         OR chat_id LIKE ? || '@%'
+      LIMIT 1
+    `).get(value, digits, digits, digits) || null;
+  },
+
+  /**
+   * Wipe a chat so the next message starts it over from the greeting.
+   *
+   * Destructive, and only ever reached from a button someone pressed. The
+   * conversation is already in the CRM, which is the record that matters; what
+   * goes is our local copy and the thread's place in the script.
+   *
+   * @returns {{ messages: number }}
+   */
+  reset(chatId) {
+    const messages = get().prepare('DELETE FROM dm_messages WHERE chat_id = ?')
+      .run(chatId).changes;
+    get().prepare('DELETE FROM dm_threads WHERE chat_id = ?').run(chatId);
+    return { messages };
+  },
+
+  /**
    * Let go of a CRM lead that no longer exists.
    *
    * Clears the record of which fields were already written along with the id.

@@ -188,3 +188,67 @@ describe('a lead deleted in the CRM does not break the chat forever', () => {
       'an unreachable CRM must not cause a second lead for the same person');
   });
 });
+
+describe('starting a chat over', () => {
+  const CHAT = '79955161551055@lid';
+
+  function fresh() {
+    db.close();
+    for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
+    db.init();
+  }
+
+  test('a chat can be found by the number, not just its id', (t) => {
+    t.after(() => { db.close();
+      for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true }); });
+    fresh();
+
+    repo.dmThreads.upsert(CHAT, '+917004428198');
+
+    // A LID chat id is unrecognisable to a person; the number is what they know.
+    assert.equal(repo.dmThreads.find('917004428198')?.chat_id, CHAT);
+    assert.equal(repo.dmThreads.find('+91 70044 28198')?.chat_id, CHAT);
+    assert.equal(repo.dmThreads.find(CHAT)?.chat_id, CHAT);
+    assert.equal(repo.dmThreads.find('919999999999'), null);
+    assert.equal(repo.dmThreads.find(''), null);
+  });
+
+  test('resetting puts the next message back to the greeting', async (t) => {
+    const before = config.ai.dmMode;
+    config.ai.dmMode = 'script';
+    t.after(() => { config.ai.dmMode = before; db.close();
+      for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true }); });
+    fresh();
+
+    // A conversation well past the end of the script.
+    repo.dmThreads.upsert(CHAT, '+917004428198');
+    for (let i = 0; i < 8; i++) {
+      repo.dmMessages.create({
+        waMessageId: 'old' + i, chatId: CHAT, direction: i % 2 ? 'out' : 'in', body: 'x'
+      });
+    }
+
+    const sends = [];
+    const o = new Orchestrator({ crm: { configured: false },
+      whatsapp: { async reply({ text }) { sends.push(text); return true; } } });
+    const say = (id) => normalise({
+      key: { id, remoteJid: CHAT, fromMe: false },
+      message: { conversation: 'Hi' }, messageTimestamp: 1
+    });
+
+    await o.handleDirect(say('before-reset'));
+    await o.settled();
+    assert.equal(sends.length, 0, 'past the script, the bot stays quiet');
+
+    // Eight seeded, plus the one just sent that the bot stayed quiet about.
+    const { messages } = repo.dmThreads.reset(CHAT);
+    assert.equal(messages, 9);
+    assert.equal(repo.dmThreads.byChatId(CHAT), null);
+
+    await o.handleDirect(say('after-reset'));
+    await o.settled();
+
+    assert.equal(sends.length, 2, 'after a reset it greets them again');
+    assert.match(sends[0], /thanks for reaching out to Iconiq Energy/);
+  });
+});

@@ -215,6 +215,32 @@ function createServer({ whatsapp, crm, orchestrator, jobs = {} }) {
    * whole point: an unidentified chat that nobody can see is indistinguishable
    * from a customer who never wrote.
    */
+  /**
+   * Start a chat over.
+   *
+   * The next message from that number is treated as a first contact: it gets
+   * the greeting again and walks the script from the top. Used when a
+   * conversation has gone wrong, or to test the opening without finding a phone
+   * that has never written in.
+   *
+   * Our local copy of the chat goes; the CRM keeps the lead and everything
+   * already sent to it.
+   */
+  api.post('/dm/reset', (req, res) => {
+    const { chat } = req.body || {};
+    const thread = repo.dmThreads.find(chat);
+
+    if (!thread) {
+      return res.status(404).json({ error: `No chat found for "${chat}"` });
+    }
+
+    const { messages } = repo.dmThreads.reset(thread.chat_id);
+    logger.warn(`Chat ${thread.chat_id} (${thread.phone || 'no number'}) reset from `
+      + `the admin panel by ${req.user?.username} — ${messages} message(s) cleared`);
+
+    res.json({ ok: true, chatId: thread.chat_id, phone: thread.phone, messages });
+  });
+
   api.get('/dm/unidentified', (req, res) => {
     res.json({ chats: repo.dmThreads.unidentified(Number(req.query.limit) || 50) });
   });

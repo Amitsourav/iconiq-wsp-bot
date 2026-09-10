@@ -181,6 +181,31 @@ async function relink(button) {
   }
 }
 
+/**
+ * Put a chat back to its first message.
+ *
+ * Destructive enough to confirm: it clears our copy of that conversation.
+ */
+async function resetChat(button) {
+  const chat = $('#resetChat').value.trim();
+  const msg = $('#resetMsg');
+  msg.textContent = '';
+  if (!chat) { msg.textContent = 'Enter a number first.'; return; }
+  if (!confirm(`Start the chat with ${chat} over?\n\nOur copy of the conversation is cleared. The CRM keeps the lead.`)) return;
+
+  button.disabled = true;
+  try {
+    const r = await api('/dm/reset', { method: 'POST', body: JSON.stringify({ chat }) });
+    msg.textContent = `Done — ${r.phone || r.chatId} cleared (${r.messages} message(s)). `
+      + 'Their next message starts from the greeting.';
+    $('#resetChat').value = '';
+  } catch (e) {
+    msg.textContent = e.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function logout() {
   token = null;
   localStorage.removeItem('token');
@@ -381,9 +406,25 @@ const views = {
       </table></div>
     </div>`;
 
+    // A chat only gets the greeting on its first message, so testing the
+    // opening — or restarting a conversation that went wrong — needs a way to
+    // put one back to the beginning.
+    const resetCard = `<div class="card">
+      <h2>Start a chat over</h2>
+      <p class="hint">The next message from this number is treated as a first
+        contact: it gets the greeting again and the script runs from the top.
+        The CRM keeps the lead and everything already sent to it — only our copy
+        of the conversation is cleared.</p>
+      <div class="row">
+        <input id="resetChat" placeholder="Phone number, e.g. 917004428198" style="width:260px">
+        <button class="btn" onclick="resetChat(this)">Start over</button>
+      </div>
+      <p class="hint" id="resetMsg"></p>
+    </div>`;
+
     if (!leads.length) {
-      return unidentified || `<div class="card"><div class="empty">
-        Nothing waiting. Leads the bot could not place on its own appear here.</div></div>`;
+      return unidentified + resetCard + (unidentified ? '' : `<div class="card"><div class="empty">
+        Nothing waiting. Leads the bot could not place on its own appear here.</div></div>`);
     }
     const REASON = {
       no_mention: 'Nobody was tagged',
@@ -391,7 +432,7 @@ const views = {
       unknown_employee: 'Tagged number is not an employee',
       no_name: 'No name found'
     };
-    return `${unidentified}<div class="card">
+    return `${unidentified}${resetCard}<div class="card">
       <h2>Needs attention</h2>
       <p class="hint">These were captured but not sent to the CRM. Nothing is lost —
         fill in what is missing and they go straight through.</p>
