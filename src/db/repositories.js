@@ -493,6 +493,48 @@ const dmThreads = {
     `).run(String(error).slice(0, 1000), chatId);
   },
 
+  /**
+   * Record a phone number discovered after the chat had already started.
+   *
+   * WhatsApp does not always send the real number with the first message of a
+   * LID-addressed chat, but it usually sends it with a later one. Only ever
+   * fills a blank — a number already recorded is the identity of the lead and
+   * is never rewritten (C3).
+   *
+   * @returns {boolean} whether this call is what filled it in
+   */
+  setPhone(chatId, phone) {
+    if (!phone) return false;
+    const result = get().prepare(`
+      UPDATE dm_threads SET phone = ?, updated_at = datetime('now')
+      WHERE chat_id = ? AND phone IS NULL
+    `).run(phone, chatId);
+    return result.changes > 0;
+  },
+
+  /**
+   * Chats we are talking to but cannot identify.
+   *
+   * The bot answers these perfectly — the customer has a normal conversation —
+   * but WhatsApp has given us no phone number for them, so no lead can be
+   * created. Without somewhere to show them they are a customer nobody in the
+   * CRM knows exists, which is worse than a visible failure.
+   */
+  unidentified(limit = 50) {
+    return get().prepare(`
+      SELECT t.*,
+             (SELECT COUNT(*) FROM dm_messages m WHERE m.chat_id = t.chat_id)
+               AS message_count,
+             (SELECT m.body FROM dm_messages m
+               WHERE m.chat_id = t.chat_id AND m.direction = 'in'
+               ORDER BY m.id DESC LIMIT 1) AS last_inbound
+      FROM dm_threads t
+      WHERE t.phone IS NULL
+      ORDER BY t.updated_at DESC
+      LIMIT ?
+    `).all(limit);
+  },
+
   /** The CRM fields already written for this chat. */
   captured(chatId) {
     const row = this.byChatId(chatId);

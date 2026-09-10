@@ -734,11 +734,17 @@ class Orchestrator {
       // the real number WhatsApp sends alongside; if there is none, record no
       // number rather than inventing one from the LID's digits — a lead under a
       // number nobody can call is worse than a lead waiting for one.
-      repo.dmThreads.upsert(
-        message.chatId,
-        phoneUtil.fromJidInternational(message.senderPnJid || message.chatId)
-      );
+      const phone = phoneUtil.fromJidInternational(message.senderPnJid || message.chatId);
+      repo.dmThreads.upsert(message.chatId, phone);
       this.recordDmMessage(message.chatId, 'in', text, message.id);
+
+      // A LID-addressed chat often arrives with no number on the first message
+      // and one on a later message, so every message is a fresh chance to
+      // identify who we are talking to. The moment it lands, ensureDmLead below
+      // creates the lead and the whole conversation stops being anonymous.
+      if (phone && repo.dmThreads.setPhone(message.chatId, phone)) {
+        logger.info(`Identified ${message.chatId} as ${phone} — creating the lead now`);
+      }
 
       // Reply first, create the lead second. The CRM routinely takes 2-20s per
       // call and a customer waiting on a chatbot notices every one of them. The
@@ -803,8 +809,23 @@ class Orchestrator {
 
     try {
       const { status, leadId } = await ensureCrmLead(this.crm, thread);
+
       if (status === 'ok') {
         logger.info(`DM lead ready: ${thread.phone || chatId} → ${leadId}`);
+        return;
+      }
+
+      if (status === 'no_phone') {
+        // The customer is having a normal conversation and getting good answers,
+        // but WhatsApp has not told us their number, so there is no lead. Said
+        // once per chat rather than per message: repeating it every time would
+        // bury it, and it is the same fact each time.
+        const messages = repo.dmMessages.recentForChat(chatId, 3).length;
+        if (messages <= 1) {
+          logger.warn(`Chatting with ${chatId} but WhatsApp has not given a phone `
+            + 'number — no lead yet. It appears under "Needs attention" in the panel, '
+            + 'and the lead is created automatically if a later message carries one.');
+        }
       }
     } catch (error) {
       repo.dmThreads.markFailed(chatId, error.message);

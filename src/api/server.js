@@ -78,7 +78,9 @@ function createServer({ whatsapp, crm, orchestrator, jobs = {} }) {
       sendingPaused: repo.settings.get('sending_paused') === 'true',
       counts: {
         held: repo.leads.held().length,
-        pending: repo.leads.pending(999).length
+        pending: repo.leads.pending(999).length,
+        // Chats we are answering but cannot identify, so no lead exists for them.
+        unidentified: repo.dmThreads.unidentified(999).length
       }
     });
   });
@@ -204,6 +206,17 @@ function createServer({ whatsapp, crm, orchestrator, jobs = {} }) {
 
   api.get('/leads/held', (req, res) => {
     res.json({ leads: repo.leads.held() });
+  });
+
+  /**
+   * Conversations with no phone number, and so no lead.
+   *
+   * These are real customers being answered by the bot. Surfacing them is the
+   * whole point: an unidentified chat that nobody can see is indistinguishable
+   * from a customer who never wrote.
+   */
+  api.get('/dm/unidentified', (req, res) => {
+    res.json({ chats: repo.dmThreads.unidentified(Number(req.query.limit) || 50) });
   });
 
   /** Assign a held lead by hand, then push it immediately. */

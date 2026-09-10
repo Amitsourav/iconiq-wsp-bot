@@ -261,6 +261,7 @@ const views = {
         <div class="grid" style="margin-top:16px">
           <div class="stat"><b>${s.counts.held}</b><span>Need attention</span></div>
           <div class="stat"><b>${s.counts.pending}</b><span>Waiting to send</span></div>
+          <div class="stat"><b>${s.counts.unidentified ?? 0}</b><span>Chats with no number</span></div>
           <div class="stat"><b>${s.crm.users}</b><span>CRM users</span></div>
           <div class="stat"><b>${s.crm.configured ? 'Yes' : 'No'}</b><span>CRM connected</span></div>
         </div>
@@ -356,11 +357,32 @@ const views = {
   },
 
   async held() {
-    const [{ leads }, { employees }] = await Promise.all([
-      api('/leads/held'), api('/employees')
+    const [{ leads }, { employees }, { chats }] = await Promise.all([
+      api('/leads/held'), api('/employees'), api('/dm/unidentified')
     ]);
+
+    // Chats the bot is answering but cannot identify. Shown above the held leads
+    // because nothing else in the system reveals them: the customer is getting
+    // replies and no lead exists anywhere.
+    const unidentified = !chats.length ? '' : `<div class="card">
+      <h2>Chats with no phone number</h2>
+      <p class="hint">The bot is replying to these people normally, but WhatsApp has
+        not given us their number, so no lead could be created. If a later message
+        carries the number, the lead is created automatically. Otherwise, read the
+        conversation and add them by hand.</p>
+      <div class="scroll"><table>
+        <tr><th>Chat</th><th>Messages</th><th>Last thing they said</th><th>Started</th></tr>
+        ${chats.map((c) => `<tr>
+          <td>${esc(String(c.chat_id).split('@')[0])}</td>
+          <td>${c.message_count}</td>
+          <td class="msg">${esc((c.last_inbound || '').slice(0, 220))}</td>
+          <td>${esc((c.created_at || '').replace('T', ' ').slice(0, 16))}</td>
+        </tr>`).join('')}
+      </table></div>
+    </div>`;
+
     if (!leads.length) {
-      return `<div class="card"><div class="empty">
+      return unidentified || `<div class="card"><div class="empty">
         Nothing waiting. Leads the bot could not place on its own appear here.</div></div>`;
     }
     const REASON = {
@@ -369,7 +391,7 @@ const views = {
       unknown_employee: 'Tagged number is not an employee',
       no_name: 'No name found'
     };
-    return `<div class="card">
+    return `${unidentified}<div class="card">
       <h2>Needs attention</h2>
       <p class="hint">These were captured but not sent to the CRM. Nothing is lost —
         fill in what is missing and they go straight through.</p>

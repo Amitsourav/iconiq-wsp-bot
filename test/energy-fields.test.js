@@ -338,3 +338,72 @@ describe('LID addressing is never mistaken for a phone number', () => {
       null);
   });
 });
+
+describe('a chat we cannot identify is visible, and recovers on its own', () => {
+  const ANON = '79955161551055@lid';
+
+  beforeEach(() => {
+    db.close();
+    for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
+    db.init();
+  });
+
+  test('a chat with no number is listed rather than lost', () => {
+    repo.dmThreads.upsert(ANON, null);
+    repo.dmMessages.create({
+      waMessageId: 'a1', chatId: ANON, direction: 'in', body: 'Hi'
+    });
+    repo.dmMessages.create({
+      waMessageId: 'a2', chatId: ANON, direction: 'out', body: 'greeting'
+    });
+    repo.dmMessages.create({
+      waMessageId: 'a3', chatId: ANON, direction: 'in', body: 'I need 10kw'
+    });
+
+    const [chat] = repo.dmThreads.unidentified();
+
+    assert.equal(chat.chat_id, ANON);
+    assert.equal(chat.message_count, 3);
+    // The newest thing the CUSTOMER said, so it can be acted on without opening
+    // WhatsApp — not the bot's own last reply.
+    assert.equal(chat.last_inbound, 'I need 10kw');
+  });
+
+  test('an identified chat is not listed', () => {
+    repo.dmThreads.upsert('919812345000@s.whatsapp.net', '+919812345000');
+    assert.equal(repo.dmThreads.unidentified().length, 0);
+  });
+
+  test('a number arriving on a later message fills the blank', () => {
+    repo.dmThreads.upsert(ANON, null);
+    assert.equal(repo.dmThreads.byChatId(ANON).phone, null);
+
+    const filled = repo.dmThreads.setPhone(ANON, '+919812345000');
+
+    assert.equal(filled, true, 'the number should have been recorded');
+    assert.equal(repo.dmThreads.byChatId(ANON).phone, '+919812345000');
+    assert.equal(repo.dmThreads.unidentified().length, 0, 'it should no longer need attention');
+  });
+
+  test('a number already recorded is never rewritten', () => {
+    // The phone is the lead's identity (C3). A later message must not be able to
+    // move an existing lead onto a different number.
+    repo.dmThreads.upsert(ANON, '+919812345000');
+
+    const changed = repo.dmThreads.setPhone(ANON, '+919999999999');
+
+    assert.equal(changed, false);
+    assert.equal(repo.dmThreads.byChatId(ANON).phone, '+919812345000');
+  });
+
+  test('once identified, the retry worker picks it up for a lead', () => {
+    repo.dmThreads.upsert(ANON, null);
+    // No number means nothing to look up, so it is not queued.
+    assert.equal(repo.dmThreads.awaitingLead().length, 0);
+
+    repo.dmThreads.setPhone(ANON, '+919812345000');
+
+    assert.equal(repo.dmThreads.awaitingLead().length, 1,
+      'a chat that just became identifiable should be queued for a lead');
+  });
+});
