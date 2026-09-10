@@ -83,3 +83,57 @@ describe('relink', () => {
     assert.equal(client.state, 'awaiting_scan');
   });
 });
+
+describe('send limits protect the number without silencing customers', () => {
+  test('one chat is capped, so a reply loop is caught fast', () => {
+    const client = new WhatsAppClient();
+    const chat = 'a@s.whatsapp.net';
+
+    let allowed = 0;
+    while (client.withinRateLimit(chat).ok && allowed < 50) {
+      client.sendTimestamps.push({ at: Date.now(), chatId: chat });
+      allowed += 1;
+    }
+
+    assert.ok(allowed <= 10, `one chat should be capped low, got ${allowed}`);
+    assert.equal(client.withinRateLimit(chat).scope, 'this chat');
+  });
+
+  test('a busy chat does not silence everyone else', () => {
+    // The old global-only cap was 12/min, so six new customers exhausted it and
+    // every reply after that was dropped with only a log to say so.
+    const client = new WhatsAppClient();
+    const busy = 'busy@s.whatsapp.net';
+
+    while (client.withinRateLimit(busy).ok) {
+      client.sendTimestamps.push({ at: Date.now(), chatId: busy });
+    }
+
+    assert.equal(client.withinRateLimit('someone-else@s.whatsapp.net').ok, true,
+      'a different customer must still be answered');
+  });
+
+  test('the global cap still exists, for the account', () => {
+    const client = new WhatsAppClient();
+    let sent = 0;
+    while (sent < 100) {
+      const chat = `chat-${sent}@s.whatsapp.net`;   // always a fresh chat
+      if (!client.withinRateLimit(chat).ok) break;
+      client.sendTimestamps.push({ at: Date.now(), chatId: chat });
+      sent += 1;
+    }
+
+    assert.ok(sent < 100, 'there must still be a ceiling on total sends');
+    assert.equal(client.withinRateLimit('another@s.whatsapp.net').scope, 'everything');
+  });
+
+  test('old sends fall out of the window', () => {
+    const client = new WhatsAppClient();
+    const chat = 'a@s.whatsapp.net';
+    // Everything sent over a minute ago should no longer count.
+    for (let i = 0; i < 40; i++) {
+      client.sendTimestamps.push({ at: Date.now() - 61_000, chatId: chat });
+    }
+    assert.equal(client.withinRateLimit(chat).ok, true);
+  });
+});

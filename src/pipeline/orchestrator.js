@@ -36,6 +36,16 @@ const extract = require('../ai/extract');
 /** Give up after this many CRM attempts and mark the lead failed. */
 const MAX_ATTEMPTS = 8;
 
+/**
+ * Sent when the assistant cannot answer at all.
+ *
+ * Deliberately says nothing it cannot back up: no promise of a time, no
+ * pretending to have understood. The conversation is captured regardless, so
+ * this is a holding line for the customer, not a substitute for the answer.
+ */
+const AI_UNAVAILABLE_REPLY =
+  'Thanks for your message. Our team will get back to you shortly.';
+
 class Orchestrator {
   /**
    * @param {{ crm: import('../crm/client').CrmClient, whatsapp: object }} deps
@@ -833,8 +843,22 @@ class Orchestrator {
     if (!config.ai.enabled || !config.ai.replyInDms) return;
     if (repo.settings.get('sending_paused') === 'true') return;
 
-    const answer = await assistant.replyDirect(message.chatId, text);
-    if (!answer) return;
+    let answer = await assistant.replyDirect(message.chatId, text);
+
+    if (!answer) {
+      // The model is unreachable or refused. Saying nothing leaves a customer
+      // staring at a chat that answered them a minute ago and has now gone
+      // quiet — they conclude the business ignored them. A plain holding line
+      // is honest and keeps the enquiry alive; the lead and the whole
+      // conversation are captured either way, so the team can pick it up.
+      //
+      // Sent once, not after every failed message: repeating it while an outage
+      // lasts is its own kind of broken.
+      const last = repo.dmMessages.recentForChat(message.chatId, 1)[0];
+      if (last?.direction === 'out' && last.body === AI_UNAVAILABLE_REPLY) return;
+      answer = AI_UNAVAILABLE_REPLY;
+      logger.warn(`AI unavailable for ${message.chatId} — sent the holding reply`);
+    }
 
     // First contact answers with two messages — the greeting and the details it
     // asks for — so this takes one or many and sends them in order.

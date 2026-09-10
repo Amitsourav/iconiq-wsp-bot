@@ -58,7 +58,27 @@ const FAILURES_BEFORE_RECONNECT = 2;
 const LID_CACHE_TTL_MS = 10 * 60_000;
 
 const SEND_WINDOW_MS = 60_000;
-const SEND_MAX_PER_WINDOW = 12;
+
+/**
+ * Sending guards (S3).
+ *
+ * There are two, because there are two different runaway risks and one number
+ * cannot cover both.
+ *
+ * The dangerous one is talking to the same person in a loop — a bug answering
+ * its own output, which is what S3 was written for. That is caught by the
+ * per-chat cap, and caught quickly.
+ *
+ * The global cap exists so a bug cannot mass-message the whole address book and
+ * get the number banned. It used to be 12 a minute for everything, which was
+ * sized for a bot that only ever posted into one in-house group. Answering
+ * customers is a different shape: two messages just to greet someone means six
+ * new enquiries in a minute exhausted it, and every reply after that was
+ * dropped — the customer got silence and only the log knew why. A campaign or
+ * a busy morning would have hit that constantly.
+ */
+const SEND_MAX_PER_CHAT = 8;
+const SEND_MAX_PER_WINDOW = 30;
 
 class WhatsAppClient extends EventEmitter {
   constructor() {
@@ -517,10 +537,23 @@ class WhatsAppClient extends EventEmitter {
    * Whether another send is allowed inside the rate-limit window (S3).
    * @private
    */
-  withinRateLimit() {
+  withinRateLimit(chatId) {
     const now = Date.now();
-    this.sendTimestamps = this.sendTimestamps.filter((t) => now - t < SEND_WINDOW_MS);
-    return this.sendTimestamps.length < SEND_MAX_PER_WINDOW;
+    // Entries are { at, chatId } so the same history answers both questions.
+    this.sendTimestamps = this.sendTimestamps.filter((s) => now - s.at < SEND_WINDOW_MS);
+
+    if (this.sendTimestamps.length >= SEND_MAX_PER_WINDOW) {
+      return { ok: false, scope: 'everything', cap: SEND_MAX_PER_WINDOW };
+    }
+
+    if (chatId) {
+      const forChat = this.sendTimestamps.filter((s) => s.chatId === chatId).length;
+      if (forChat >= SEND_MAX_PER_CHAT) {
+        return { ok: false, scope: 'this chat', cap: SEND_MAX_PER_CHAT };
+      }
+    }
+
+    return { ok: true };
   }
 
   /**
@@ -540,15 +573,17 @@ class WhatsAppClient extends EventEmitter {
       return false;
     }
 
-    if (!this.withinRateLimit()) {
+    const limit = this.withinRateLimit(groupId);
+    if (!limit.ok) {
       // Loud, because silently dropping replies would look like the bot ignoring
       // people. Capture is unaffected.
-      logger.error(`Send rate limit hit (${SEND_MAX_PER_WINDOW}/min) — reply suppressed`);
+      logger.error(`Send rate limit hit for ${limit.scope} (${limit.cap}/min) — `
+        + `reply to ${groupId} suppressed`);
       return false;
     }
 
     try {
-      this.sendTimestamps.push(Date.now());
+      this.sendTimestamps.push({ at: Date.now(), chatId: groupId });
       const sent = await this.sock.sendMessage(
         groupId,
         { text, mentions: toMentionJids(mentions) },
