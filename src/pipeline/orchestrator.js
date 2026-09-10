@@ -816,6 +816,9 @@ class Orchestrator {
       // is at risk in doing the slow half afterwards.
       await this.replyToDm(message, rawMessage, text);
       await this.ensureDmLead(message.chatId);
+      // Every message, not just the first: the conversation view has to keep up
+      // with the conversation.
+      await this.syncDmToCrm(message.chatId);
       await this.captureDmFields(message.chatId);
     } catch (error) {
       logger.error(`Direct-message handling failed on ${message?.id}: ${error.message}`);
@@ -888,14 +891,6 @@ class Orchestrator {
 
       if (status === 'ok') {
         logger.info(`DM lead ready: ${thread.phone || chatId} → ${leadId}`);
-
-        // Straight into the CRM's conversation view, as it happens. Anything
-        // that fails here stays unsynced and the daily job picks it up, so a
-        // CRM hiccup delays the inbox rather than losing the conversation.
-        await pushDmMessages(this.crm, repo.dmThreads.byChatId(chatId),
-          { selfPhone: this.whatsapp?.selfPhone })
-          .catch((error) => logger.warn(
-            `Chat messages not sent to the CRM yet for ${chatId}: ${error.message}`));
         return;
       }
 
@@ -914,6 +909,34 @@ class Orchestrator {
     } catch (error) {
       repo.dmThreads.markFailed(chatId, error.message);
       logger.warn(`DM lead not created yet for ${chatId}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Send anything not yet in the CRM's conversation view.
+   *
+   * Deliberately its own step, run after every message rather than folded into
+   * ensureDmLead. It used to live inside it, after the lead was created — and
+   * that function returns immediately once a thread already has a lead, so the
+   * push only ever ran once. The CRM showed the two or three messages that
+   * existed when the lead was created and nothing after: the customer's answers
+   * reached their fields, but the conversation itself stopped at the greeting.
+   *
+   * A failure leaves the messages unsynced, so the next message or the daily
+   * job sends them — the conversation catches up rather than losing a line.
+   *
+   * @private
+   */
+  async syncDmToCrm(chatId) {
+    if (!this.crm.configured) return;
+
+    const thread = repo.dmThreads.byChatId(chatId);
+    if (!thread?.crm_lead_id) return;
+
+    try {
+      await pushDmMessages(this.crm, thread, { selfPhone: this.whatsapp?.selfPhone });
+    } catch (error) {
+      logger.warn(`Chat messages not sent to the CRM yet for ${chatId}: ${error.message}`);
     }
   }
 

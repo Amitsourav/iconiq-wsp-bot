@@ -546,3 +546,73 @@ describe('one chat is handled one message at a time', () => {
     assert.equal(o.chatQueues.has('chat-d'), false);
   });
 });
+
+describe('the conversation view keeps up with the conversation', () => {
+  const { Orchestrator } = require('../src/pipeline/orchestrator');
+  const CHAT3 = '919311359236@s.whatsapp.net';
+
+  beforeEach(() => {
+    db.close();
+    for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
+    db.init();
+  });
+
+  test('messages sent after the lead exists still reach the CRM', async () => {
+    // The push used to live inside ensureDmLead, which returns early once a
+    // thread has a lead — so only the messages present at creation were ever
+    // sent. The CRM showed the greeting and nothing the customer said after.
+    const sent = [];
+    const crm = {
+      configured: true,
+      async findByPhone() { return { status: 'none', lead: null }; },
+      async createLead() { return { lead: { id: 'lead-9' }, deferred: {}, dropped: [] }; },
+      async addLeadMessage(leadId, m) { sent.push(m.body); return {}; }
+    };
+    const o = new Orchestrator({ crm, whatsapp: { selfPhone: '919821152633' } });
+
+    repo.dmThreads.upsert(CHAT3, '+919311359236');
+    repo.dmMessages.create({
+      waMessageId: 'm1', chatId: CHAT3, direction: 'in', body: 'Hi'
+    });
+
+    await o.ensureDmLead(CHAT3);
+    await o.syncDmToCrm(CHAT3);
+    assert.deepEqual(sent, ['Hi']);
+
+    // The conversation continues after the lead already exists.
+    repo.dmMessages.create({
+      waMessageId: 'm2', chatId: CHAT3, direction: 'out', body: 'Thanks Amit!'
+    });
+    repo.dmMessages.create({
+      waMessageId: 'm3', chatId: CHAT3, direction: 'in', body: 'Shop'
+    });
+
+    await o.ensureDmLead(CHAT3);
+    await o.syncDmToCrm(CHAT3);
+
+    assert.deepEqual(sent, ['Hi', 'Thanks Amit!', 'Shop'],
+      'everything said after the lead was created must reach the CRM too');
+  });
+
+  test('a message is never sent to the CRM twice', async () => {
+    const sent = [];
+    const crm = {
+      configured: true,
+      async findByPhone() { return { status: 'found', lead: { id: 'lead-9' } }; },
+      async addLeadMessage(leadId, m) { sent.push(m.body); return {}; }
+    };
+    const o = new Orchestrator({ crm, whatsapp: {} });
+
+    repo.dmThreads.upsert(CHAT3, '+919311359236');
+    repo.dmMessages.create({
+      waMessageId: 'm1', chatId: CHAT3, direction: 'in', body: 'Hi'
+    });
+
+    await o.ensureDmLead(CHAT3);
+    await o.syncDmToCrm(CHAT3);
+    await o.syncDmToCrm(CHAT3);
+    await o.syncDmToCrm(CHAT3);
+
+    assert.deepEqual(sent, ['Hi']);
+  });
+});
