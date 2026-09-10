@@ -175,8 +175,29 @@ function findUnreadable(text) {
  */
 function fromJid(jid) {
   if (!jid) return null;
+  if (isLid(jid)) return null;
   const digits = String(jid).split('@')[0].split(':')[0];
   return normalise(digits).e164;
+}
+
+/**
+ * Whether a JID is a LID rather than a phone number.
+ *
+ * WhatsApp now addresses people by "LID" — an internal id that looks exactly
+ * like a long phone number ("79955161551055@lid") and is not one. Read as a
+ * number it passes every length check and comes out as a plausible foreign
+ * E.164, which is how a lead reached the CRM under "+79955161551055" on
+ * 10 Sep 2026: a number nobody could call, that deduplicates against nothing.
+ *
+ * The real number is carried separately on the message key (`senderPn` /
+ * `participantPn`); see whatsapp/messages.js. Where it is absent we record no
+ * number at all rather than invent one.
+ *
+ * @param {string} jid
+ * @returns {boolean}
+ */
+function isLid(jid) {
+  return String(jid || '').endsWith('@lid');
 }
 
 /**
@@ -196,10 +217,15 @@ function fromJid(jid) {
  */
 function fromJidInternational(jid) {
   if (!jid) return null;
+  // A LID's digits are not a phone number, and this function's whole purpose —
+  // treating a JID's digits as dialable because "a JID is always a real number
+  // by protocol" — is exactly the assumption a LID breaks.
+  if (isLid(jid)) return null;
   const digits = String(jid).split('@')[0].split(':')[0];
   return normalise(digits).e164 || normalise(`+${digits}`).e164;
 }
 
 module.exports = {
-  normalise, extract, fromJid, fromJidInternational, stripFormatting, findUnreadable
+  normalise, extract, fromJid, fromJidInternational, isLid,
+  stripFormatting, findUnreadable
 };

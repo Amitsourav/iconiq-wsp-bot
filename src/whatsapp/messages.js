@@ -69,7 +69,14 @@ function normalise(raw) {
   const isGroup = remoteJid.endsWith('@g.us');
 
   // In a group the actual sender is `participant`; remoteJid is the group.
-  const senderJid = isGroup ? raw.key.participant : remoteJid;
+  //
+  // Both may be LIDs rather than phone numbers. When they are, WhatsApp sends
+  // the real number alongside on the key — `participantPn` in a group,
+  // `senderPn` in a direct chat — so prefer those. Without this a DM's LID gets
+  // read as a foreign phone number and the lead is filed under a number that
+  // does not exist.
+  const senderPnJid = (isGroup ? raw.key.participantPn : raw.key.senderPn) || null;
+  const senderJid = senderPnJid || (isGroup ? raw.key.participant : remoteJid);
 
   const context = contextOf(raw.message);
 
@@ -85,13 +92,26 @@ function normalise(raw) {
   return {
     id: raw.key.id,
     groupId: isGroup ? remoteJid : null,
-    // Always set, group or DM — the JID to send a reply back to.
+    // Always set, group or DM — identifies the conversation.
     chatId: remoteJid,
+    /**
+     * Where a reply is actually addressed.
+     *
+     * For a direct chat that arrived over a LID, this is the sender's real
+     * phone JID: a @lid address is newer than the number-based one and does not
+     * route everywhere, so a reply sent to it can vanish without an error.
+     * Groups always reply to the group itself.
+     */
+    replyTo: (!isGroup && senderPnJid) ? senderPnJid : remoteJid,
     isGroup,
     fromMe: Boolean(raw.key.fromMe),
     senderPhone: phone.fromJid(senderJid),
     senderJid: senderJid || null,
-    senderIsLid: Boolean(senderJid && String(senderJid).endsWith('@lid')),
+    /** The sender's real phone JID, when WhatsApp supplied one. */
+    senderPnJid,
+    // True only when we are still holding a LID with no number beside it —
+    // senderPnJid above resolves the common case without a lookup.
+    senderIsLid: Boolean(senderJid && phone.isLid(senderJid)),
     text: textOf(unwrap(raw.message)),
     mentions: [...new Set(mentions)],
     mentionJids,

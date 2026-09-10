@@ -431,14 +431,21 @@ class WhatsAppClient extends EventEmitter {
    * @private
    */
   async prepareAndEmit(message, raw) {
-    if (message.pendingLids?.length) {
-      const resolved = await this.resolveLids(message.groupId, message.pendingLids);
-      message.mentions = [...new Set([...message.mentions, ...resolved])];
-    }
+    // A LID is resolved against a group's participant list, so this is only
+    // possible in a group. Without the guard a direct chat asked for the
+    // participants of group `null` and waited for that to time out — fifteen
+    // seconds added to every DM before the customer's message was even looked
+    // at, and a reply that arrived long after they had put the phone down.
+    if (message.groupId) {
+      if (message.pendingLids?.length) {
+        const resolved = await this.resolveLids(message.groupId, message.pendingLids);
+        message.mentions = [...new Set([...message.mentions, ...resolved])];
+      }
 
-    if (!message.senderPhone && message.senderIsLid) {
-      const [sender] = await this.resolveLids(message.groupId, [message.senderJid]);
-      if (sender) message.senderPhone = sender;
+      if (!message.senderPhone && message.senderIsLid) {
+        const [sender] = await this.resolveLids(message.groupId, [message.senderJid]);
+        if (sender) message.senderPhone = sender;
+      }
     }
 
     // raw is passed through so a reply can quote the message that triggered it.

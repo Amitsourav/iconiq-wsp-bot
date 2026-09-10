@@ -268,3 +268,73 @@ describe('a DM lead is created on first contact', () => {
     assert.equal(crm.calls.createLead.length, 0);
   });
 });
+
+describe('LID addressing is never mistaken for a phone number', () => {
+  const { normalise } = require('../src/whatsapp/messages');
+  const phoneUtil = require('../src/pipeline/phone');
+
+  test('a LID is not a phone number', () => {
+    // "79955161551055@lid" reads as a valid foreign E.164 if you just take the
+    // digits — which is how a lead reached the CRM as "+79955161551055".
+    assert.equal(phoneUtil.fromJidInternational('79955161551055@lid'), null);
+    assert.equal(phoneUtil.fromJid('79955161551055@lid'), null);
+    assert.equal(phoneUtil.isLid('79955161551055@lid'), true);
+  });
+
+  test('a real number JID still resolves', () => {
+    assert.equal(phoneUtil.fromJidInternational('919812345000@s.whatsapp.net'),
+      '+919812345000');
+    assert.equal(phoneUtil.fromJidInternational('96569950748@s.whatsapp.net'),
+      '+96569950748');
+  });
+
+  test('a DM over LID uses the real number WhatsApp sends alongside', () => {
+    const message = normalise({
+      key: {
+        id: 'm1',
+        remoteJid: '79955161551055@lid',
+        senderPn: '919812345000@s.whatsapp.net',
+        fromMe: false
+      },
+      message: { conversation: 'hi' },
+      messageTimestamp: 1
+    });
+
+    assert.equal(message.senderPhone, '+919812345000');
+    assert.equal(message.senderPnJid, '919812345000@s.whatsapp.net');
+    // The reply goes to the number, not the LID — a @lid reply can vanish.
+    assert.equal(message.replyTo, '919812345000@s.whatsapp.net');
+    // The chat is still identified by its LID, so the thread stays one thread.
+    assert.equal(message.chatId, '79955161551055@lid');
+  });
+
+  test('a group message prefers participantPn over the LID', () => {
+    const message = normalise({
+      key: {
+        id: 'm2',
+        remoteJid: '120363000000000000@g.us',
+        participant: '2807000000000@lid',
+        participantPn: '919812345000@s.whatsapp.net',
+        fromMe: false
+      },
+      message: { conversation: 'hello' },
+      messageTimestamp: 1
+    });
+
+    assert.equal(message.senderPhone, '+919812345000');
+    // A group is always answered in the group.
+    assert.equal(message.replyTo, '120363000000000000@g.us');
+  });
+
+  test('a LID with no number beside it yields no phone, not a fake one', () => {
+    const message = normalise({
+      key: { id: 'm3', remoteJid: '79955161551055@lid', fromMe: false },
+      message: { conversation: 'hi' },
+      messageTimestamp: 1
+    });
+
+    assert.equal(message.senderPhone, null);
+    assert.equal(phoneUtil.fromJidInternational(message.senderPnJid || message.chatId),
+      null);
+  });
+});

@@ -730,7 +730,14 @@ class Orchestrator {
       // customer's message even if the AI reply below is off, fails, or the
       // send later gets rate-limited — the conversation itself is the thing we
       // must not lose.
-      repo.dmThreads.upsert(message.chatId, phoneUtil.fromJidInternational(message.chatId));
+      // The chat may be addressed by LID, which is not a phone number. Prefer
+      // the real number WhatsApp sends alongside; if there is none, record no
+      // number rather than inventing one from the LID's digits — a lead under a
+      // number nobody can call is worse than a lead waiting for one.
+      repo.dmThreads.upsert(
+        message.chatId,
+        phoneUtil.fromJidInternational(message.senderPnJid || message.chatId)
+      );
       this.recordDmMessage(message.chatId, 'in', text, message.id);
 
       // Reply first, create the lead second. The CRM routinely takes 2-20s per
@@ -757,7 +764,10 @@ class Orchestrator {
     if (!answer) return;
 
     const sent = await this.whatsapp.reply({
-      groupId: message.chatId, // works for any JID, group or individual
+      // replyTo, not chatId: a chat addressed by LID must be answered on the
+      // sender's phone JID, or the reply is accepted without error and never
+      // arrives. Falls back to chatId for an ordinary number-addressed chat.
+      groupId: message.replyTo || message.chatId,
       text: answer,
       quoteMessage: rawMessage,
       mentions: []

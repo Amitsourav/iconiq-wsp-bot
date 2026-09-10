@@ -1,61 +1,50 @@
 # Deploying to Railway
 
-Follow this once. After that, deploying is a single command.
+The Iconiq Energy WhatsApp bot. Deployed once, on 10 Sep 2026; after that,
+deploying is a single `git push`.
 
 ---
 
 ## The one thing that must not go wrong
 
-Two folders have to survive every deploy:
+Two things have to survive every deploy:
 
 ```
-.wwebjs_auth/   the WhatsApp login
-data/bot.db     leads captured but not yet sent to the CRM
+the WhatsApp session   the linked-device login
+data/bot.db            conversations and leads not yet in the CRM
 ```
 
 Railway containers get a **fresh filesystem on every deploy**. Without a volume,
-both are wiped each time — the bot logs out of WhatsApp and needs the phone in hand
-to link again, and any lead waiting to retry is lost.
+both are wiped each time — the bot logs out of WhatsApp and needs the phone in
+hand to link again, and any lead waiting to retry is lost.
 
-So **step 3 below is not optional.** Everything else is convenience.
+So the volume is not optional. It is already attached; do not detach it.
 
 ---
 
-## 1. Install the Railway CLI and log in
+## What is deployed, and where
 
-```bash
-npm install -g @railway/cli
-railway login
-```
+| | |
+|---|---|
+| Railway project | `eloquent-tenderness` |
+| Service | **`iconiq-wsp-bot`** |
+| Repo | `Amitsourav/iconiq-wsp-bot`, branch `main` |
+| Volume | `iconiq-wsp-bot-volume`, mounted at `/data` |
+| Panel | https://iconiq-wsp-bot-production.up.railway.app |
+| CRM | `iconiq-crm` — https://iconiq-crm-production.up.railway.app |
 
-## 2. Create the service
+**There is a second bot in the same project.** `whatsappbot` is the FundMyCampus
+loan bot: a different repo (`Amitsourav/whatsappbot`), a different CRM, a
+different WhatsApp number. The two share nothing but a Railway project. Check the
+service name before changing anything — a variable set on the wrong one points a
+live bot at the wrong company.
 
-From the project folder:
+---
 
-```bash
-cd "whatsapp-lead-bot"
-railway init          # choose "Create new project", name it whatsapp-lead-bot
-```
+## The environment variables
 
-If you would rather it sit alongside the CRM, run `railway link` and pick that
-project instead — the bot then becomes a second service inside it.
-
-## 3. Attach a volume — do this BEFORE the first deploy
-
-In the Railway dashboard: the service → **Variables / Settings → Volumes → New
-Volume**.
-
-```
-Mount path:  /data
-Size:        1 GB      (plenty — the database is a few MB)
-```
-
-Then set the two paths below so the bot writes inside the volume rather than the
-container's temporary disk.
-
-## 4. Set the environment variables
-
-Service → **Variables**. Copy the values from your local `.env`.
+Set on the service, not shared at project level, so the two bots cannot read each
+other's.
 
 | Variable | Value |
 |---|---|
@@ -63,101 +52,108 @@ Service → **Variables**. Copy the values from your local `.env`.
 | `WA_SESSION_PATH` | `/data/wa-session` |
 | `LOG_DIR` | `/data/logs` |
 | `HOST` | `0.0.0.0` |
-| `ADMIN_USER` | from `.env` |
-| `ADMIN_PASS` | from `.env` |
-| `JWT_SECRET` | from `.env` |
-| `CRM_BASE_URL` | `https://be-crm-production.up.railway.app/api/v1` |
-| `CRM_API_KEY` | the **live** key from `.env` |
-| `CRM_COMPANY_ID` | `bfa8b4fc-bdfa-4dcb-addd-6b5a1f20aa38` |
-| `CRM_EXPECTED_COMPANY_ID` | `bfa8b4fc-bdfa-4dcb-addd-6b5a1f20aa38` |
-| `CRM_SERVICE_PROFILE_ID` | `06f48ea0-4844-4601-8331-6c33e8528a2f` |
-| `TZ_DISPLAY` | `Asia/Kolkata` |
+| `NODE_ENV` | `production` |
 | `LOG_LEVEL` | `info` |
-| `PF_TARGET` | monthly PF target per counsellor, e.g. `10` |
-| `MIS_REPORT_AT` | `18:58` — when the Daily Loan MIS posts |
+| `TZ_DISPLAY` | `Asia/Kolkata` |
+| `ADMIN_USER` | `admin` |
+| `ADMIN_PASS` | a strong password — the panel is on the public internet |
+| `JWT_SECRET` | `openssl rand -hex 32`, generated fresh for production |
+| `CRM_BASE_URL` | `https://iconiq-crm-production.up.railway.app/api/v1` |
+| `CRM_API_KEY` | the Iconiq CRM service key |
+| `CRM_EXPECTED_COMPANY_ID` | `23b86075-10ca-4c76-8c2b-b9437bd90361` |
+| `CRM_LEAD_SOURCE_ID` | `71e8a215-f83b-4d3f-8787-b4acd342925a` (the CRM's "WhatsApp" source) |
+| `OPENROUTER_API_KEY` | for the AI replies |
+| `OPENROUTER_MODEL` | `anthropic/claude-sonnet-4.5` |
+| `AI_REPLY_ENABLED` | `true` |
+| `AI_REPLY_IN_DMS` | `true` |
+| `AI_REPLY_IN_GROUPS` | `false` |
+| `AI_EXTRACT_FIELDS` | `true` |
+| `DM_CRM_SYNC_AT` | `22:30` |
 
-Do **not** set `PORT` — Railway provides it.
+Do **not** set `PORT` — Railway provides it, and overriding it fails the health
+check.
 
-`PF_TARGET` is the **monthly** PF target for one counsellor. The team target in
-the MIS is this number times the counsellors reported, so changing it changes both.
-It lives here rather than in the CRM because the CRM has no PF target field, and
-because a target is a management decision that moves — a Railway variable changes
-without a deploy.
+`CRM_EXPECTED_COMPANY_ID` is a safety catch: if the key ever resolves to a
+different company, the bot refuses to start rather than writing leads into the
+wrong tenant. It is what stops an Iconiq key and a FundMyCampus key being swapped
+by accident.
 
-`CRM_EXPECTED_COMPANY_ID` is a safety catch: if the key ever points at a different
-company, the bot refuses to start rather than writing leads into the wrong place.
+`CRM_LEAD_SOURCE_ID` is mandatory — the CRM made a source required on 2026-09-07
+and rejects every create without one. It lives in a variable so it can be
+repointed if the source list is ever rebuilt.
 
-## 5. Deploy
+`AI_EXTRACT_FIELDS` turns off the reading of load, backup, solar and DG out of a
+conversation. Turning it off leaves the bot replying and the transcript still
+reaching the CRM — only the structured fields stop being filled.
 
-The service is connected to the GitHub repo `Amitsourav/whatsappbot`, branch
-`main`, so **a push is the deploy**:
+---
+
+## Deploying a change
+
+The service is connected to GitHub, so **a push is the deploy**:
 
 ```bash
 git push origin main
 ```
 
-`railway up` uploads the local folder instead, and is only the right command
-before the GitHub connection exists. Once connected, using it puts code on the
-server that is not in the repo — which is how a deploy stops being reproducible.
+The volume is untouched by a deploy, so WhatsApp stays linked.
 
-Watch the logs. A good start looks like:
+A good start looks like:
 
 ```
 Database ready at /data/bot.db
-CRM connected as whatsapp-bot@fundmycampus.com — FundMyCampus
+Loaded N CRM users
+CRM connected as whatsapp-ingest@iconiqenergy.in — Iconiq Energy (23b86075-…)
+Retry worker started (every 60s)
 Admin panel on http://0.0.0.0:8080
-No saved session — link the number to continue
 ```
 
-## 6. Open the panel and link WhatsApp
+If the session is gone it will say `No saved session — link the number to
+continue` and show a QR in the panel. On a normal deploy it should **not** say
+that. If it does, the volume is not mounted — stop and fix that before scanning,
+or you will be scanning again on the next deploy.
 
-Service → **Settings → Networking → Generate Domain**. That gives a public URL.
+---
 
-Open it, sign in with `ADMIN_USER` / `ADMIN_PASS`, and scan the QR from the bot's
-phone: **WhatsApp → Settings → Linked Devices → Link a Device**.
+## Linking the number (first time, or after a logout)
 
-## 7. Stop the copy running on the Mac
+1. Open the panel and sign in
+2. On the Iconiq phone: **WhatsApp → Settings → Linked Devices → Link a Device**
+3. Scan the QR
 
-**Important.** Linking a second device does not unlink the first, so both would read
-the same group and both would reply. The CRM would refuse the duplicate lead, but
-your team would see two messages for everything.
+The scan is one-time. The session survives restarts, reboots and redeploys. It
+breaks only if the primary phone stays offline for ~14 days, the volume is lost,
+the device is unlinked from the phone, or a WhatsApp change breaks the library.
+
+---
+
+## Only ever run one copy
+
+Linking a second device does not unlink the first. Two copies on one number both
+process every message and both reply, so customers see everything twice.
+
+If a copy is running on the Mac:
 
 ```bash
 lsof -ti:3001 | xargs kill
 ```
 
-## 8. Check it
-
-- Post a test lead in the group; confirm it appears in the CRM
-- In the panel, confirm the group is still being watched and the employee list is
-  intact *(these live in the database, so they arrive with the volume — but check)*
-
----
-
-## Afterwards
-
-**Deploying a change:** `railway up`. The volume is untouched, so WhatsApp stays
-linked.
-
-**Watching it:** `railway logs`, or the Logs tab.
-
-**If it restarts:** Railway restarts on failure automatically, up to ten times. The
-saved session means it reconnects to WhatsApp on its own.
+The local `.env` points at the same live Iconiq CRM, so a local run is not a
+sandbox — it writes real leads.
 
 ---
 
 ## Things worth knowing
 
-**The panel will be on the public internet.** It is protected by the login and a
-JWT, but the password is now the only thing standing in front of it. Make sure
-`ADMIN_PASS` is strong — the bot refuses to start on known defaults, but "strong
-enough for localhost" is not the same as "strong enough for the internet".
+**The panel is on the public internet.** It is protected by the login and a JWT,
+and the bot refuses to start on known default passwords — but `ADMIN_PASS` is the
+only thing in front of it.
 
-**Only ever run one copy.** Two processes on one WhatsApp number fight: WhatsApp
-allows the linked devices, but both would process every message and reply twice.
+**The kill switch.** The panel can stop all sending while capture keeps running.
+If the bot ever misbehaves in front of a customer, that is the button.
 
-**Cost:** roughly $5/month, plus a few cents for the volume.
+**Cost:** roughly $5/month plus a few cents for the volume, and OpenRouter usage
+per conversation — one model call to reply, one to read details out of it.
 
-**If the volume is ever lost**, the bot starts fresh: it will ask for a QR scan, and
-the group and employee settings need re-entering. Nothing reaches the CRM twice,
-because the CRM deduplicates on phone number.
+**If the volume is ever lost**, the bot starts fresh: it will ask for a QR scan.
+Nothing reaches the CRM twice, because leads deduplicate on phone number.
