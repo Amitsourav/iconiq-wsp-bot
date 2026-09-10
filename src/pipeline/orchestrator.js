@@ -775,22 +775,34 @@ class Orchestrator {
     const answer = await assistant.replyDirect(message.chatId, text);
     if (!answer) return;
 
-    const sent = await this.whatsapp.reply({
-      // replyTo, not chatId: a chat addressed by LID must be answered on the
-      // sender's phone JID, or the reply is accepted without error and never
-      // arrives. Falls back to chatId for an ordinary number-addressed chat.
-      groupId: message.replyTo || message.chatId,
-      text: answer,
-      quoteMessage: rawMessage,
-      mentions: []
-    });
+    // First contact answers with two messages — the greeting and the details it
+    // asks for — so this takes one or many and sends them in order.
+    const parts = (Array.isArray(answer) ? answer : [answer]).filter(Boolean);
 
-    // Outbound messages never come back through the WhatsApp event stream —
-    // fromMe is filtered out before it reaches here — so this is the only
-    // place the bot's half of the conversation ever gets recorded. Keyed on a
-    // synthetic id (there is no real WhatsApp id to use) so a retry of the
-    // same inbound message can't double up the transcript.
-    if (sent) this.recordDmMessage(message.chatId, 'out', answer, `out:${message.id}`);
+    for (const [index, part] of parts.entries()) {
+      const sent = await this.whatsapp.reply({
+        // replyTo, not chatId: a chat addressed by LID must be answered on the
+        // sender's phone JID, or the reply is accepted without error and never
+        // arrives. Falls back to chatId for an ordinary number-addressed chat.
+        groupId: message.replyTo || message.chatId,
+        text: part,
+        // Only the first quotes what they wrote. Quoting the same message twice
+        // reads as the bot repeating itself.
+        quoteMessage: index === 0 ? rawMessage : undefined,
+        mentions: []
+      });
+
+      // Outbound messages never come back through the WhatsApp event stream —
+      // fromMe is filtered out before it reaches here — so this is the only
+      // place the bot's half of the conversation ever gets recorded. Keyed on a
+      // synthetic id (there is no real WhatsApp id to use), with the index so
+      // two replies to one message stay two rows rather than collapsing into
+      // one on the UNIQUE constraint.
+      if (sent) {
+        this.recordDmMessage(message.chatId, 'out', part,
+          index === 0 ? `out:${message.id}` : `out:${message.id}:${index}`);
+      }
+    }
   }
 
   /**

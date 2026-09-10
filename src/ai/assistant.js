@@ -89,16 +89,27 @@ const DM_GREETING = `Hi, thanks for reaching out to Iconiq Energy. We have a com
 
 Product Datasheets & Company Profile - https://linktr.ee/iconiqenergy.in
 
-Please share the following details so we can help you better.
+Please share the following details so we can help you better.`;
 
-1. Your name
-2. Your city
-3. Where it's for — home, shop, office, factory, hospital
-4. The load you want to run (in kW)
-5. Backup needed (in hours)
-6. Whether you already have solar or a DG set
+/**
+ * Sent straight after the greeting, as its own message.
+ *
+ * The greeting ends by asking for "the following details", so this is what it
+ * is pointing at — the two are one thought split across two bubbles, which is
+ * how the team wanted it and how people read WhatsApp.
+ *
+ * Every line here maps to a CRM field the extractor knows (full_name, email,
+ * organization, city), so what a customer writes back lands in the record
+ * rather than only in the transcript. The technical side — load, backup,
+ * existing solar and DG — is asked conversationally instead, because it needs
+ * follow-up questions a form cannot ask.
+ */
+const DM_DETAILS_REQUEST = `Please share:
 
-Share whatever you know — you don't need all of it, and you can just write normally.`;
+1. Name -
+2. E-Mail -
+3. Company Name -
+4. City -`;
 
 /** chatId -> [{role, content}, ...], oldest first. */
 const histories = new Map();
@@ -149,9 +160,15 @@ async function reply(chatId, userText) {
 async function replyDirect(chatId, userText) {
   const history = historyFor(chatId);
 
+  // First contact is two fixed messages and no model call: the greeting, then
+  // the details it asks for. Returned together so the caller sends them as two
+  // WhatsApp messages rather than one long one.
   if (history.length === 0) {
-    history.push({ role: 'user', content: userText }, { role: 'assistant', content: DM_GREETING });
-    return DM_GREETING;
+    history.push(
+      { role: 'user', content: userText },
+      { role: 'assistant', content: `${DM_GREETING}\n\n${DM_DETAILS_REQUEST}` }
+    );
+    return [DM_GREETING, DM_DETAILS_REQUEST];
   }
 
   const messages = [
