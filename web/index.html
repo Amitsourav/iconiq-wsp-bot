@@ -186,21 +186,25 @@ async function relink(button) {
  *
  * Destructive enough to confirm: it clears our copy of that conversation.
  */
-async function resetChat(button) {
-  const chat = $('#resetChat').value.trim();
+async function resetChat(button, chatId) {
+  // Either typed in the box, or the row's own id — a chat with no phone number
+  // cannot be found by typing one, and its LID is not something anyone knows.
+  const chat = chatId || $('#resetChat').value.trim();
   const msg = $('#resetMsg');
-  msg.textContent = '';
-  if (!chat) { msg.textContent = 'Enter a number first.'; return; }
+  if (msg) msg.textContent = '';
+  if (!chat) { if (msg) msg.textContent = 'Enter a number first.'; return; }
   if (!confirm(`Start the chat with ${chat} over?\n\nOur copy of the conversation is cleared. The CRM keeps the lead.`)) return;
 
   button.disabled = true;
   try {
     const r = await api('/dm/reset', { method: 'POST', body: JSON.stringify({ chat }) });
-    msg.textContent = `Done — ${r.phone || r.chatId} cleared (${r.messages} message(s)). `
+    const done = `Done — ${r.phone || r.chatId} cleared (${r.messages} message(s)). `
       + 'Their next message starts from the greeting.';
-    $('#resetChat').value = '';
+    if (msg) msg.textContent = done;
+    if ($('#resetChat')) $('#resetChat').value = '';
+    if (chatId) { button.textContent = 'Cleared'; render(); }
   } catch (e) {
-    msg.textContent = e.message;
+    if (msg) msg.textContent = e.message; else alert(e.message);
   } finally {
     button.disabled = false;
   }
@@ -396,12 +400,14 @@ const views = {
         carries the number, the lead is created automatically. Otherwise, read the
         conversation and add them by hand.</p>
       <div class="scroll"><table>
-        <tr><th>Chat</th><th>Messages</th><th>Last thing they said</th><th>Started</th></tr>
+        <tr><th>Chat</th><th>Messages</th><th>Last thing they said</th><th>Started</th><th></th></tr>
         ${chats.map((c) => `<tr>
           <td>${esc(String(c.chat_id).split('@')[0])}</td>
           <td>${c.message_count}</td>
           <td class="msg">${esc((c.last_inbound || '').slice(0, 220))}</td>
           <td>${esc((c.created_at || '').replace('T', ' ').slice(0, 16))}</td>
+          <td><button class="btn" onclick="resetChat(this, '${esc(c.chat_id)}')"
+            title="Their next message starts from the greeting">Start over</button></td>
         </tr>`).join('')}
       </table></div>
     </div>`;
