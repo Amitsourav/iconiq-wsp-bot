@@ -223,6 +223,21 @@ function esc(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
+/**
+ * How long since WhatsApp last handed the bot anything.
+ *
+ * "Connected" on its own has been misleading once already: the socket reported
+ * connected for five hours while delivering no messages at all, and nothing on
+ * this page could have shown it. This is the number that would have.
+ */
+function quietFor(seconds) {
+  if (seconds === null || seconds === undefined) return '—';
+  if (seconds < 90) return seconds + 's';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 90) return minutes + 'm';
+  return Math.round(minutes / 60) + 'h';
+}
+
 const WA_LABEL = {
   connected: ['Connected', 'ok'],
   connecting: ['Connecting…', 'warn'],
@@ -288,6 +303,7 @@ const views = {
           <span class="pill ${cls}"><span class="dot"></span> ${esc(label)}</span>
         </div>
         <div class="grid" style="margin-top:16px">
+          <div class="stat"><b>${quietFor(w.quietForSeconds)}</b><span>Last message in</span></div>
           <div class="stat"><b>${s.counts.held}</b><span>Need attention</span></div>
           <div class="stat"><b>${s.counts.pending}</b><span>Waiting to send</span></div>
           <div class="stat"><b>${s.counts.unidentified ?? 0}</b><span>Chats with no number</span></div>

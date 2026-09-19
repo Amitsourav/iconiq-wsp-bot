@@ -80,6 +80,54 @@ const SEND_WINDOW_MS = 60_000;
 const SEND_MAX_PER_CHAT = 8;
 const SEND_MAX_PER_WINDOW = 30;
 
+/**
+ * Whether a replayed message is recent enough to act on.
+ *
+ * WhatsApp marks redelivered traffic as history rather than as live, so this is
+ * the question that decides whether a reconnect recovers the messages it missed
+ * or throws them away. Everything downstream is keyed on wa_message_id, which is
+ * UNIQUE everywhere it is stored, so acting twice on one message is already a
+ * no-op — age is the only thing left worth checking.
+ *
+ * @param {number} timestamp - the message's WhatsApp timestamp, in seconds
+ * @param {number} [now] - milliseconds, injectable for tests
+ * @returns {boolean}
+ */
+function withinReplayWindow(timestamp, now = Date.now()) {
+  if (!timestamp) return false;
+  const ageMs = now - timestamp * 1000;
+  // A timestamp in the future is a clock skew, not a stale message.
+  if (ageMs < 0) return true;
+  return ageMs <= config.whatsapp.replayMaxAgeHours * 3_600_000;
+}
+
+/**
+ * Whether the connection has gone quiet in a way that means it is deaf.
+ *
+ * Pure, and takes the hour rather than reading a clock, because the whole point
+ * is to be able to test "quiet at 3am is fine, quiet at 3pm is not" without
+ * waiting for either.
+ *
+ * @param {{ lastMessageAt: number|null, now?: number, hour: number }} params
+ * @returns {boolean}
+ */
+function soundsDeaf({ lastMessageAt, now = Date.now(), hour }) {
+  // Nothing has ever arrived on this connection, so there is no gap to measure.
+  if (!lastMessageAt) return false;
+
+  const { silenceMinutes, activeFromHour, activeUntilHour } = config.whatsapp;
+  if (hour < activeFromHour || hour >= activeUntilHour) return false;
+
+  return now - lastMessageAt >= silenceMinutes * 60_000;
+}
+
+/** The hour of the day in the display timezone, 0-23. */
+function hourNow() {
+  return Number(new Intl.DateTimeFormat('en-GB', {
+    timeZone: config.timezone, hour: '2-digit', hour12: false
+  }).format(new Date()));
+}
+
 class WhatsAppClient extends EventEmitter {
   constructor() {
     super();
@@ -99,6 +147,14 @@ class WhatsAppClient extends EventEmitter {
     this.lidCache = new Map();
     this.watchdog = null;
     this.probeFailures = 0;
+    /**
+     * When WhatsApp last handed us anything at all, live or replayed.
+     *
+     * This is the only honest measure of whether the connection is working. The
+     * socket's own health says nothing: it answered every probe for five hours
+     * on 2026-09-19 while delivering not one message.
+     */
+    this.lastMessageAt = null;
     /** Set while a history replay is in flight, so it is not requested twice. */
     this.recovering = false;
   }
@@ -113,7 +169,14 @@ class WhatsAppClient extends EventEmitter {
       connected: this.connected,
       selfPhone: this.selfPhone,
       qr: this.state === 'awaiting_scan' ? this.qrDataUrl : null,
-      pairingCode: this.state === 'awaiting_scan' ? this.pairingCode : null
+      pairingCode: this.state === 'awaiting_scan' ? this.pairingCode : null,
+      // What "connected" alone cannot tell you. A socket can report connected
+      // for hours while delivering nothing, and until this was on screen the
+      // only way to find out was for someone to message the bot and wait.
+      lastMessageAt: this.lastMessageAt ? new Date(this.lastMessageAt).toISOString() : null,
+      quietForSeconds: this.lastMessageAt
+        ? Math.round((Date.now() - this.lastMessageAt) / 1000)
+        : null
     };
   }
 
@@ -214,6 +277,10 @@ class WhatsAppClient extends EventEmitter {
       this.connectedAt = Date.now();
       this.disconnectedAt = null;
       this.selfPhone = this.sock.user?.id?.split(':')[0] || null;
+      // A fresh connection has heard nothing yet through no fault of its own,
+      // so the silence clock starts here. Without this a reconnect inherits the
+      // old gap and declares itself deaf the moment the watchdog first runs.
+      this.lastMessageAt = Date.now();
 
       this.startWatchdog();
 
@@ -389,6 +456,20 @@ class WhatsAppClient extends EventEmitter {
     this.watchdog = setInterval(async () => {
       if (this.state !== 'connected' || !this.sock) return;
 
+      // Checked before the probe, because the probe cannot see this failure.
+      // A deaf socket answers every ping perfectly; the only thing it does not
+      // do is deliver messages, so a long working-hours silence is the symptom.
+      if (soundsDeaf({ lastMessageAt: this.lastMessageAt, hour: hourNow() })) {
+        const quietFor = Math.round((Date.now() - this.lastMessageAt) / 60_000);
+        logger.error(`Nothing received for ${quietFor} minutes during working `
+          + 'hours — the connection answers but may not be delivering. Reconnecting.');
+        // Moved forward so a reconnect that does not restore delivery waits a
+        // full silence window before trying again, rather than looping.
+        this.lastMessageAt = Date.now();
+        this.forceReconnect();
+        return;
+      }
+
       try {
         // A real round trip to WhatsApp. If the socket is a zombie this hangs,
         // which the timeout turns into a failure.
@@ -492,14 +573,31 @@ class WhatsAppClient extends EventEmitter {
     logger.info(`WhatsApp delivered ${messages?.length || 0} message(s), type="${type}"`
       + (senders ? ` — ${senders}` : ''));
 
-    // 'notify' is a live message. 'append' is history sync, which we ignore —
-    // reprocessing old messages would create leads for conversations long since
-    // handled.
-    if (type !== 'notify') {
+    // Anything at all means the line is alive. Recorded before the filtering
+    // below, because a replayed batch proves the connection is working just as
+    // well as a live one does.
+    this.lastMessageAt = Date.now();
+
+    // 'notify' is live traffic. 'append' is what WhatsApp hands back after a
+    // gap — the messages it could not deliver while we were away.
+    //
+    // 'append' used to be discarded wholesale, on the reasoning that replaying
+    // old messages would create leads for conversations long since handled.
+    // That reasoning was wrong in the one case that mattered: every table
+    // holding a wa_message_id has it UNIQUE, so a message already handled is
+    // a no-op, and the only messages a replay can act on are the ones we never
+    // saw. Discarding them meant a reconnect recovered nothing — on 2026-09-19
+    // the recovery from a five-hour outage arrived as 23 replayed messages and
+    // every one was thrown away, several of them customers.
+    //
+    // Age is the real limit, so age is what is checked, per message below.
+    if (type !== 'notify' && type !== 'append') {
       logger.warn(`Ignored ${messages?.length || 0} message(s) of type "${type}" — `
-        + 'only "notify" reaches the pipeline.');
+        + 'only live and replayed messages reach the pipeline.');
       return;
     }
+
+    let stale = 0;
 
     for (const raw of messages) {
       // Group messages go through the lead pipeline; DMs go through the AI
@@ -522,10 +620,23 @@ class WhatsAppClient extends EventEmitter {
         continue;
       }
 
+      // A replay reaching back further than the window is genuine history — the
+      // sync that follows a fresh link, not a message we owe someone an answer
+      // to. Answering those would restart conversations that ended weeks ago.
+      if (type === 'append' && !withinReplayWindow(message.timestamp)) {
+        stale += 1;
+        continue;
+      }
+
       // Resolve identities before handing the message on, so the pipeline only
       // ever sees phone numbers.
       this.prepareAndEmit(message, raw).catch((error) =>
         logger.error(`Failed to prepare message ${message.id}: ${error.message}`));
+    }
+
+    if (stale) {
+      logger.info(`Skipped ${stale} replayed message(s) older than `
+        + `${config.whatsapp.replayMaxAgeHours}h — history, not a missed reply.`);
     }
   }
 
@@ -648,4 +759,4 @@ class WhatsAppClient extends EventEmitter {
   }
 }
 
-module.exports = { WhatsAppClient };
+module.exports = { WhatsAppClient, withinReplayWindow, soundsDeaf };

@@ -72,7 +72,48 @@ const config = {
      * because it was briefly 'pn', and being able to put it back without a
      * deploy is worth more than the tidiness of removing the option.
      */
-    replyTo: process.env.WA_REPLY_TO === 'pn' ? 'pn' : 'chat'
+    replyTo: process.env.WA_REPLY_TO === 'pn' ? 'pn' : 'chat',
+
+    /**
+     * How long the bot may hear nothing before it treats the connection as deaf
+     * and forces a reconnect.
+     *
+     * On 2026-09-19 the socket stopped receiving at 11:37 and nothing noticed
+     * for five hours. The liveness watchdog could not: it asks WhatsApp "are you
+     * there?", and WhatsApp kept answering yes while delivering nothing. The
+     * only symptom of a deaf connection is silence, so silence is what has to be
+     * measured.
+     *
+     * Forty-five minutes is comfortably longer than a normal daytime gap on this
+     * number and short enough that a deaf spell costs one quiet hour rather than
+     * an afternoon.
+     */
+    silenceMinutes: int(process.env.WA_SILENCE_MINUTES, 45),
+
+    /**
+     * The hours during which silence is suspicious, in the display timezone.
+     *
+     * Outside them an empty inbox is just night, and reconnecting every 45
+     * minutes until morning would be churn with nothing to gain — each
+     * reconnect costs a re-handshake and a burst of session renegotiation.
+     */
+    activeFromHour: int(process.env.WA_ACTIVE_FROM_HOUR, 8),
+    activeUntilHour: int(process.env.WA_ACTIVE_UNTIL_HOUR, 22),
+
+    /**
+     * How far back a replayed message may reach before we stop acting on it.
+     *
+     * After a reconnect WhatsApp hands back what it could not deliver, marked as
+     * history rather than as live traffic. Those messages used to be discarded
+     * wholesale — which is how 23 of them, several from real customers, were
+     * binned on 2026-09-19 immediately after the outage that caused them.
+     *
+     * Replaying is safe by construction: every table keyed on wa_message_id has
+     * it UNIQUE, so a message already handled is a no-op. The limit is not about
+     * duplicates but about age — answering someone who wrote yesterday is
+     * helpful, answering a conversation from last month is not.
+     */
+    replayMaxAgeHours: int(process.env.WA_REPLAY_MAX_AGE_HOURS, 24)
   },
 
   crm: {
