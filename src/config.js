@@ -120,29 +120,6 @@ const config = {
   reassignAllowed: (process.env.REASSIGN_ALLOWED || '+917827225354')
     .split(',').map((s) => s.trim()).filter(Boolean),
 
-  /**
-   * The daily loan MIS: month-to-date figures per counsellor, against a target.
-   *
-   * Counsellors are identified by CRM email rather than name or profile id —
-   * emails are stable, names get edited, and ids differ between tenants.
-   * STAGE_REPORT_AGENTS is still honoured: it named these same four people for
-   * the login-and-PF report this one replaced, so an existing deployment that
-   * sets it keeps working.
-   *
-   * `pfTarget` is a MONTHLY target per person. The CRM has no PF target field
-   * (`target_call_count` is a call target, and is null in live data), so it lives
-   * here — a Railway variable, changeable without a deploy, which matters because
-   * a target is a management decision that moves.
-   */
-  misReport: {
-    at: process.env.MIS_REPORT_AT || '18:58',
-    agents: (process.env.MIS_REPORT_AGENTS || process.env.STAGE_REPORT_AGENTS
-      || 'ankit@fundmycampus.com,hbhatia4216@gmail.com,'
-       + 'zaid@fundmycampus.com,fundmycampus@gmail.com')
-      .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
-    pfTarget: int(process.env.PF_TARGET, 10)
-  },
-
   /** Duplicate suppression window, in minutes. */
   dedupeWindowMinutes: int(process.env.DEDUPE_WINDOW_MINUTES, 10),
 

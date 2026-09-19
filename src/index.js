@@ -15,7 +15,7 @@ const { WhatsAppClient } = require('./whatsapp/client');
 const { Orchestrator } = require('./pipeline/orchestrator');
 const { RetryWorker } = require('./pipeline/worker');
 const { DailyScheduler } = require('./pipeline/scheduler');
-const { buildMorningMessage, buildLoanMis } = require('./pipeline/digest');
+const { buildMorningMessage } = require('./pipeline/digest');
 const { syncDmConversations } = require('./pipeline/dmSync');
 const { createServer } = require('./api/server');
 
@@ -53,34 +53,6 @@ async function main() {
    * it holds a reference so the panel can send one on demand. Filled in below.
    */
   const jobs = {};
-
-  /**
-   * Turn configured emails into CRM agents.
-   *
-   * Resolved from the live user list on every run, so a renamed or re-created CRM
-   * account does not silently drop someone out of a report.
-   *
-   * @param {string[]} emails
-   * @param {string} reportName - named in the log, so it is clear which report lost someone
-   * @returns {{id: string, name: string}[]}
-   */
-  const resolveAgents = (emails, reportName) => {
-    const agents = emails
-      .map((email) => [...(crm.users?.values() || [])]
-        .find((u) => u.email.toLowerCase() === email))
-      .filter(Boolean)
-      .map((u) => ({ id: u.id, name: u.full_name }));
-
-    const missing = emails.length - agents.length;
-    if (missing > 0) {
-      logger.warn(`${missing} configured agent(s) not found in the CRM for the ${reportName}`);
-    }
-    if (!agents.length) {
-      logger.error(`No agents resolved — ${reportName} skipped`);
-    }
-
-    return agents;
-  };
 
   if (crm.configured) {
     try {
@@ -140,7 +112,10 @@ async function main() {
           + `sending ${group.send_enabled ? 'on' : 'off'})`);
       }
       if (active.length === 0) {
-        logger.warn('No groups are being monitored yet — choose one in the admin panel.');
+        // Not a warning: this deployment answers direct messages and monitors no
+        // groups by design. It fired on every reconnect — hourly — which is how
+        // a log stops being read. Turn a group on in the panel to change it.
+        logger.info('No groups monitored — direct messages only.');
       }
     } catch (error) {
       logger.error(`Could not list groups: ${error.message}`);
@@ -184,13 +159,27 @@ async function main() {
         return;
       }
 
+      let posted = 0;
       for (const group of repo.groups.active()) {
         if (!group.send_enabled || group.purpose !== 'inhouse') continue;
         await whatsapp.reply({ groupId: group.wa_group_id, text: summary.text });
+        posted += 1;
       }
 
-      logger.info(`Morning message posted: ${summary.leads} lead(s), `
-        + `${summary.untouched} untouched, ${summary.due} follow-up(s)`);
+      const figures = `${summary.leads} lead(s), ${summary.untouched} untouched, `
+        + `${summary.due} follow-up(s)`;
+
+      // Counted rather than assumed. This used to report success whatever
+      // happened, so on a DM-only deployment — no in-house group to post into —
+      // the log said the summary had gone out every morning while nobody had
+      // ever received one.
+      if (posted) {
+        logger.info(`Morning message posted to ${posted} group(s): ${figures}`);
+      } else {
+        logger.warn(`Morning summary built but not posted — no in-house group has `
+          + `sending on. It said: ${figures}`);
+      }
+
       return summary;
   };
 
@@ -201,38 +190,12 @@ async function main() {
   });
   digest.start();
 
-  // The month-to-date loan MIS, posted at the end of the day. It goes out on a
-  // flat day too — a target is only useful if the gap to it is visible every
-  // evening, and a report that appears only on good days is not a report.
-  jobs['loan-mis'] = async () => {
-      if (repo.settings.get('sending_paused') === 'true') {
-        logger.info('Sending is paused — skipping the loan MIS');
-        return;
-      }
-
-      const agents = resolveAgents(config.misReport.agents, 'loan MIS');
-      if (!agents.length) return;
-
-      const report = await buildLoanMis(crm, agents);
-      if (!report) return;
-
-      for (const group of repo.groups.active()) {
-        if (!group.send_enabled || group.purpose !== 'inhouse') continue;
-        await whatsapp.reply({ groupId: group.wa_group_id, text: report.text });
-      }
-
-      logger.info(`Loan MIS posted: ${report.totals.leads} lead(s), `
-        + `${report.totals.logged_in} login, ${report.totals.sanctioned} sanction, `
-        + `${report.totals.pf_paid}/${report.totals.teamTarget} PF`);
-      return report;
-  };
-
-  const loanMis = new DailyScheduler({
-    name: 'loan-mis',
-    at: config.misReport.at,
-    run: jobs['loan-mis']
-  });
-  loanMis.start();
+  // The month-to-date loan MIS is NOT scheduled here. It reports a loan
+  // pipeline's counsellors against a PF target — the FundMyCampus bot's job, not
+  // this one's. It was scheduled here once, and because its four configured
+  // emails belong to that other tenant it resolved nobody and logged an error
+  // every single evening. `buildLoanMis` remains in pipeline/digest.js for
+  // whoever wants it; nothing in this service calls it.
 
   // Push the day's DM chatbot conversations into the CRM: one remark per
   // customer, carrying their name, phone, and the transcript since the last
@@ -261,7 +224,6 @@ async function main() {
 
     worker.stop();
     digest.stop();
-    loanMis.stop();
     dmSync.stop();
     await whatsapp.disconnect().catch(() => {});
     await new Promise((resolve) => server.close(resolve));

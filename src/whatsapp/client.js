@@ -480,18 +480,40 @@ class WhatsAppClient extends EventEmitter {
 
   /** @private */
   onMessages({ messages, type }) {
+    // Every batch is reported BEFORE any filtering, because a message dropped
+    // below this line leaves no trace anywhere — no database row, no
+    // skipped_messages entry, nothing. On 2026-09-19 the bot stopped answering
+    // and the logs could not distinguish "WhatsApp never delivered it" from
+    // "we received it and threw it away", which are the same silence and
+    // completely different repairs.
+    const senders = (messages || [])
+      .map((m) => `${m?.key?.remoteJid || 'unknown'}${m?.key?.fromMe ? ' (ours)' : ''}`)
+      .join(', ');
+    logger.info(`WhatsApp delivered ${messages?.length || 0} message(s), type="${type}"`
+      + (senders ? ` — ${senders}` : ''));
+
     // 'notify' is a live message. 'append' is history sync, which we ignore —
     // reprocessing old messages would create leads for conversations long since
     // handled.
-    if (type !== 'notify') return;
+    if (type !== 'notify') {
+      logger.warn(`Ignored ${messages?.length || 0} message(s) of type "${type}" — `
+        + 'only "notify" reaches the pipeline.');
+      return;
+    }
 
     for (const raw of messages) {
-      const message = normalise(raw);
       // Group messages go through the lead pipeline; DMs go through the AI
       // assistant (see index.js). Both are let through here now — only history
       // replay (onHistory, below) stays group-only, since that path exists
       // purely to recover missed leads after a reconnect gap.
-      if (!message) continue;
+      const message = normalise(raw);
+      if (!message) {
+        // A message shape we could not read at all. Rare, and previously
+        // invisible: the loop simply skipped it.
+        logger.warn('Could not read an incoming message from '
+          + `${raw?.key?.remoteJid || 'unknown'} — skipped.`);
+        continue;
+      }
 
       // S1 — never react to our own output. Its replies contain no mention and no
       // phone number, and without this guard the bot can talk to itself.

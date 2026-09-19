@@ -29,6 +29,16 @@ const MAX_LISTED = 8;
 const OVERDUE_WINDOW_DAYS = 7;
 
 /**
+ * Monthly PF target per counsellor, used when a caller names none.
+ *
+ * The loan MIS belongs to the FundMyCampus loan pipeline, not to this service —
+ * nothing here schedules it (see index.js). It lives on as a tested builder for
+ * whoever does call it, so the default sits beside it rather than in config,
+ * where it would read as a setting this deployment honours.
+ */
+const DEFAULT_PF_TARGET = 10;
+
+/**
  * The date N days ago in the display timezone, as YYYY-MM-DD.
  * @param {number} daysAgo
  * @returns {string}
@@ -323,7 +333,7 @@ async function countLeadsByAssignee(crm, monthStart, today) {
  */
 async function buildLoanMis(crm, agents, options = {}) {
   const today = options.today || dateKey(0);
-  const pfTarget = options.pfTarget ?? config.misReport.pfTarget;
+  const pfTarget = options.pfTarget ?? DEFAULT_PF_TARGET;
 
   // "Month to date" is the 1st of the current month up to today, inclusive.
   const monthStart = `${today.slice(0, 7)}-01`;

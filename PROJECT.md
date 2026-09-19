@@ -3,8 +3,43 @@
 Living document. Update it when a decision is made or an assumption turns out wrong.
 
 - **Owner:** Amit Sourav
-- **Status:** v2 running. Way 1 complete; Way 2 capturing but not yet interpreting.
-- **Last updated:** 2026-09-10
+- **Status:** v2 running **as an Iconiq Energy direct-message bot**. Way 1 and
+  Way 2 are built and tested but monitor no groups in production — see
+  "What is actually running" below.
+- **Last updated:** 2026-09-19
+
+---
+
+## 0. What is actually running
+
+This distinction matters before reading anything else, because most of this
+document describes machinery that is deployed but idle.
+
+**Live:** direct messages to the bot's number. A customer writes, the fixed
+three-message enquiry script answers, a CRM lead is created within seconds, every
+message reaches the CRM's conversation view, and the model reads the chat for
+`full_name`, `email`, `city`, `organization` and the energy sizing fields.
+Verified against production logs on 2026-09-19: leads created and fields captured
+throughout the day, redelivery correctly ignored, the retry worker rescuing leads
+the CRM was too slow to take first time.
+
+**Idle by design:** the number is in 7 groups and monitors **0**. No group is
+marked active in the panel, so Way 1 (in-house → CRM) and Way 2 (bank groups)
+capture nothing here. Turning a group on in the panel is all that is needed; the
+code is unchanged and its tests pass.
+
+**Removed from this service:** the daily loan MIS. It reports loan counsellors
+against a PF target and belongs to the FundMyCampus bot. Scheduled here by
+inheritance, its four configured emails were from that other tenant, so it
+resolved nobody and logged an error every evening from at least 12 Sep until it
+was unscheduled on 2026-09-19. `buildLoanMis` is still in `pipeline/digest.js`,
+still tested, and called by nothing here.
+
+**Still owed:** inbound messages are occasionally lost to
+`Failed to decrypt message with any known session`, several times a day. Those
+never reach the pipeline, so there is no `dm_messages` row, no reply, and no
+`skipped_messages` record — the one place where "nothing is ever dropped" does
+not currently hold.
 
 ---
 
@@ -144,10 +179,13 @@ the phone is unknown, whether a bank update should move the main stage, what to 
 when two banks disagree, and where a rejection goes when `bank_status` has no value
 for it.
 
-**The AI assistant's scope.** `src/ai/` answers direct messages using an **Iconiq
-Energy** product knowledge base — a different business from the loan pipeline the
-rest of this repository serves. It is off unless `AI_REPLY_ENABLED` is set. Whether
-it belongs in this service at all is unresolved.
+**The AI assistant's scope — settled 2026-09-19.** `src/ai/` answers direct
+messages using an **Iconiq Energy** product knowledge base, and that is now the
+whole job of this deployment rather than a side path in a loan bot. The loan
+pipeline the rest of this document describes belongs to the FundMyCampus bot, a
+separate repository and a separate number; what remains of it here is deployed
+but idle. Replies themselves are the fixed script (`DM_MODE=script`); the model
+is used for reading fields out of a conversation.
 
 ---
 
@@ -235,7 +273,12 @@ it belongs in this service at all is unresolved.
 
 ## 9. Open questions to resolve with the owner
 
-1. Which bank groups are being monitored, and which bank is each?
-2. Should a bank update ever move a lead's main stage, or only its bank status?
-3. Does the Iconiq Energy DM assistant belong in this service, or its own?
-4. Have the CRM credentials pasted into a chat channel been rotated?
+1. Have the CRM credentials pasted into a chat channel been rotated?
+2. What should happen to a direct message that never decrypts? Today it is lost
+   silently, which is the one hole in "nothing is ever dropped".
+3. Do the group pipelines have a future on this number, or should Way 1 and
+   Way 2 move out of this repository entirely now that it is a DM bot?
+
+Answered: the DM assistant is this service (§5). Bank-group mapping and whether a
+bank update may move a lead's stage are questions for the FundMyCampus bot, which
+is where that pipeline actually runs.
