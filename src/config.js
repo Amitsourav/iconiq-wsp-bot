@@ -113,7 +113,20 @@ const config = {
      * duplicates but about age — answering someone who wrote yesterday is
      * helpful, answering a conversation from last month is not.
      */
-    replayMaxAgeHours: int(process.env.WA_REPLAY_MAX_AGE_HOURS, 24)
+    replayMaxAgeHours: int(process.env.WA_REPLAY_MAX_AGE_HOURS, 24),
+
+    /**
+     * Ask WhatsApp for the conversation history it holds, on the next connect.
+     *
+     * Off normally — it is a large download of chats already dealt with. Its
+     * purpose is recovery after an outage: messages that were never recorded
+     * exist nowhere but on the phone, and this is the only way to ask for them
+     * back. Turn it on, restart, let the history arrive, turn it off again.
+     *
+     * Recovered conversations are captured and filed but never answered; see
+     * `message.replayed` in whatsapp/client.js.
+     */
+    syncFullHistory: bool(process.env.WA_SYNC_FULL_HISTORY, false)
   },
 
   crm: {

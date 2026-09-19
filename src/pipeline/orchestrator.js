@@ -846,7 +846,17 @@ class Orchestrator {
       // call and a customer waiting on a chatbot notices every one of them. The
       // conversation is already safe in our database by this point, so nothing
       // is at risk in doing the slow half afterwards.
-      await this.replyToDm(message, rawMessage, text);
+      //
+      // A recovered message is the exception: it is captured and filed exactly
+      // like a live one, but never answered. Greeting someone hours after they
+      // wrote advertises that nobody was listening, and by then what they need
+      // is a person — which is what the lead this creates is for.
+      if (message.replayed) {
+        logger.info(`Recovered a message from ${message.chatId} that arrived while `
+          + 'the bot was not listening — filed, not answered.');
+      } else {
+        await this.replyToDm(message, rawMessage, text);
+      }
 
       // The CRM half runs on its own queue for this chat, so it is still done
       // strictly in order but the customer's NEXT reply does not wait for it.

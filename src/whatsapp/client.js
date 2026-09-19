@@ -209,7 +209,13 @@ class WhatsAppClient extends EventEmitter {
       logger: pino({ level: 'silent' }),
       browser: Browsers.ubuntu('Chrome'),
       markOnlineOnConnect: false,      // never appear "online" as a side effect
-      syncFullHistory: false,          // we only care about messages from now on
+      // Normally off: we only care about messages from now on, and a full sync
+      // is a large, slow download of conversations that were handled long ago.
+      // Switchable without a deploy because it is the one lever that asks
+      // WhatsApp to hand back chats we never recorded — the recovery for an
+      // outage that has already ended. Turn it on, restart, let the history
+      // land, turn it off again.
+      syncFullHistory: config.whatsapp.syncFullHistory,
       generateHighQualityLinkPreview: false
     });
 
@@ -431,18 +437,43 @@ class WhatsAppClient extends EventEmitter {
   onHistory({ messages }) {
     if (!messages?.length) return;
 
+    this.lastMessageAt = Date.now();
+
     let considered = 0;
+    let stale = 0;
+
     for (const raw of messages) {
       const message = normalise(raw);
-      if (!message || !message.isGroup) continue;
+      if (!message) continue;
       if (message.fromMe || this.ownMessageIds.has(message.id)) continue;
+
+      // Direct messages used to be dropped here, so this path only ever
+      // recovered groups. That made it useless to the one deployment that has
+      // no groups: when the connection went deaf on 2026-09-19, the history
+      // WhatsApp offered back contained the missing conversations and we
+      // declined all of them. A DM is recoverable for exactly the same reason
+      // a group message is — wa_message_id is UNIQUE, so replaying one we
+      // already hold changes nothing.
+      if (!withinReplayWindow(message.timestamp)) {
+        stale += 1;
+        continue;
+      }
+
+      // Marks this as recovered rather than live. The pipeline records it in
+      // full — database, CRM lead, conversation — but does not answer it: a
+      // greeting arriving hours after someone wrote reads worse than silence,
+      // and a person who has been waiting that long deserves a human.
+      message.replayed = true;
 
       considered += 1;
       this.prepareAndEmit(message, raw).catch((error) =>
         logger.error(`Replayed message ${message.id} failed: ${error.message}`));
     }
 
-    if (considered) logger.info(`Replayed ${considered} message(s) from history`);
+    if (considered || stale) {
+      logger.info(`History offered ${messages.length} message(s): `
+        + `${considered} recovered, ${stale} too old to act on.`);
+    }
   }
 
   /**
