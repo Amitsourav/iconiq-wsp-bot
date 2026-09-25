@@ -401,6 +401,45 @@ class WhatsAppClient extends EventEmitter {
   }
 
   /**
+   * Unlink this device from WhatsApp, from our side.
+   *
+   * The same thing as tapping "Log out" on the device under Linked Devices on
+   * the phone. It exists because a session can break while still logging in
+   * fine: on 24 Sep 2026 the keys fell out of step with WhatsApp's, every
+   * incoming message failed to decrypt, and the socket kept reporting
+   * "connected" — so relink(), which only opens once WhatsApp ends the session,
+   * could never be reached from the panel. Finding the right entry in the
+   * phone's device list was the only way out, and it was easy to get wrong.
+   *
+   * It touches nothing on disk. WhatsApp answers with loggedOut, the close
+   * handler moves the state to `logged_out`, and relink() — with its own terms
+   * unchanged — is what then archives the session and shows a new QR.
+   *
+   * Only while connected: the request has to reach WhatsApp to mean anything,
+   * and marking a session dead locally while it is still linked on WhatsApp's
+   * side would leave a second device attached to the number.
+   *
+   * @returns {Promise<void>}
+   */
+  async logout() {
+    if (this.state !== 'connected' || !this.sock) {
+      throw new Error(
+        `Refusing to log out while the session is "${this.state}". `
+        + 'Logging out needs a live connection to reach WhatsApp.'
+      );
+    }
+
+    logger.warn('Logging this device out of WhatsApp at the operator\'s request');
+    await this.sock.logout('Logged out from the admin panel');
+
+    // The close event says the same thing, but not necessarily before the panel
+    // asks again, and a button that seems to do nothing gets pressed twice.
+    this.state = 'logged_out';
+    this.stopWatchdog();
+    this.emit('status', this.status());
+  }
+
+  /**
    * Ask the phone to replay recent messages for a group.
    *
    * This is the recovery for a gap. WhatsApp will not tell us what we missed, but

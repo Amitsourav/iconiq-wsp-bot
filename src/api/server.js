@@ -102,6 +102,26 @@ function createServer({ whatsapp, crm, orchestrator, jobs = {} }) {
     }
   }));
 
+  /**
+   * Unlink the bot's device from WhatsApp, so it can be linked again.
+   *
+   * For a session that is broken but still logged in — "connected", yet
+   * delivering nothing. Needs an explicit confirmation in the body, because it
+   * ends with a QR that someone has to scan from the phone.
+   */
+  api.post('/whatsapp/logout', wrap(async (req, res) => {
+    if (req.body?.confirm !== 'LOGOUT') {
+      return res.status(400).json({ error: 'Send {"confirm":"LOGOUT"} to log the bot out' });
+    }
+    try {
+      await whatsapp.logout();
+      logger.warn(`WhatsApp logged out from the admin panel by ${req.user?.username}`);
+      res.json({ ok: true, whatsapp: whatsapp.status() });
+    } catch (error) {
+      res.status(409).json({ error: error.message });
+    }
+  }));
+
   /** Kill switch (S4) — silences replies, never capture. */
   api.post('/sending/:action', (req, res) => {
     const paused = req.params.action === 'pause';

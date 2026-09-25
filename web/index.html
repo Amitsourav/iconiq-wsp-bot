@@ -182,6 +182,34 @@ async function relink(button) {
 }
 
 /**
+ * Unlink the bot from WhatsApp so it can be linked again.
+ *
+ * Confirmed first: it stops the bot receiving anything until someone scans a
+ * new QR with the phone. Once the server reports logged_out, the panel offers
+ * "Link a number again", which produces that QR.
+ */
+async function logoutWhatsApp(button) {
+  const err = $('#logoutErr');
+  if (err) err.textContent = '';
+  if (!confirm('Log the bot out of WhatsApp?\n\n'
+    + 'It stops receiving messages until you scan a new QR code with the '
+    + 'Iconiq phone. Leads and settings are not affected.')) return;
+
+  button.disabled = true;
+  button.textContent = 'Logging out…';
+  try {
+    await api('/whatsapp/logout', {
+      method: 'POST', body: JSON.stringify({ confirm: 'LOGOUT' })
+    });
+    refreshStatus();
+  } catch (e) {
+    if (err) err.textContent = e.message;
+    button.disabled = false;
+    button.textContent = 'Log out and link again';
+  }
+}
+
+/**
  * Put a chat back to its first message.
  *
  * Destructive enough to confirm: it clears our copy of that conversation.
@@ -289,6 +317,20 @@ const views = {
         deleted.</p>
         <button class="btn primary" onclick="relink(this)">Link a number again</button>
         <p class="err" id="relinkErr"></p></div>`;
+    }
+
+    // A session can stay "connected" while delivering nothing — the keys go out
+    // of step with WhatsApp's and every message fails to decrypt. Logging out
+    // from here is the way back to a fresh QR without hunting for the right
+    // entry in the phone's Linked Devices list.
+    if (w.state === 'connected') {
+      linking = `<div class="card"><h2>Not receiving messages?</h2>
+        <p class="hint">If “Last message in” keeps growing while people are
+        messaging the bot, its WhatsApp login may be broken even though it says
+        connected. Logging out here unlinks the bot; you then link it again by
+        scanning a new QR code with the Iconiq phone.</p>
+        <button class="btn danger" onclick="logoutWhatsApp(this)">Log out and link again</button>
+        <p class="err" id="logoutErr"></p></div>`;
     }
 
     return `

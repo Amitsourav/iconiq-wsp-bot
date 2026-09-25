@@ -74,6 +74,13 @@ otherwise a dead end after a logout — it said "restart the bot to link again",
 which needs the hosting dashboard, so the person holding the phone could not act
 on it. Do not widen it into anything that runs automatically.
 
+`WhatsAppClient.logout()` is its companion, not a second exception: it asks
+WhatsApp to unlink the device and touches nothing on disk. It exists because a
+session broke on 24 Sep 2026 while still logging in fine — every message failed
+to decrypt, the state stayed `connected`, and `relink()` could never be reached.
+It runs only while `connected`, only from the panel, only with an explicit
+confirmation. Keep all three.
+
 **Phone number is the identity of a lead.** Indian numbers normalise to
 `+91XXXXXXXXXX`, matching the CRM's own `normalize_phone` so we can predict that
 they will deduplicate. Overseas numbers are accepted only with an explicit `+` and

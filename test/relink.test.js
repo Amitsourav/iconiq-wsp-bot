@@ -73,6 +73,55 @@ describe('relink', () => {
     assert.equal(client.reconnectAttempts, 0, 'backoff carried over from the dead session');
   });
 
+  describe('logging out from our side', () => {
+    /** A stand-in socket that records the logout, as WhatsApp would see it. */
+    const fakeSock = () => {
+      const calls = [];
+      return { calls, logout: async (msg) => { calls.push(msg); } };
+    };
+
+    for (const state of ['connecting', 'awaiting_scan', 'disconnected', 'logged_out']) {
+      test(`refuses while the session is "${state}"`, async () => {
+        client.state = state;
+        client.sock = fakeSock();
+
+        await assert.rejects(() => client.logout(), /Refusing to log out/);
+        assert.equal(client.sock.calls.length, 0, 'asked WhatsApp to unlink anyway');
+      });
+    }
+
+    test('asks WhatsApp to unlink the device and marks the session dead', async () => {
+      client.state = 'connected';
+      client.sock = fakeSock();
+
+      await client.logout();
+
+      assert.equal(client.sock.calls.length, 1);
+      assert.equal(client.state, 'logged_out');
+    });
+
+    test('never touches the session folder itself', async () => {
+      client.state = 'connected';
+      client.sock = fakeSock();
+
+      await client.logout();
+
+      assert.ok(fs.existsSync(path.join(SESSION, 'creds.json')),
+        'logout moved or deleted the session — that is relink()\'s job, under its own terms');
+    });
+
+    test('opens the way to relink, which then archives and shows a QR', async () => {
+      client.state = 'connected';
+      client.sock = fakeSock();
+
+      await client.logout();
+      const { archivedTo } = await client.relink();
+
+      assert.ok(archivedTo);
+      assert.equal(client.state, 'awaiting_scan');
+    });
+  });
+
   test('works even if the session folder is already gone', async () => {
     client.state = 'logged_out';
     fs.rmSync(SESSION, { recursive: true, force: true });
