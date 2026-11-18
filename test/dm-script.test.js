@@ -1,9 +1,9 @@
 /**
  * The fixed enquiry script.
  *
- * Three messages and then silence, decided from what the customer has actually
- * sent rather than from memory, so a redeploy mid-enquiry does not greet them
- * a second time.
+ * A greeting with a 1/2 menu, the details for the option chosen, a closing
+ * line, then silence — decided from what the bot has already sent, read from
+ * the database, so a redeploy mid-enquiry does not greet them a second time.
  */
 const { test, describe, mock } = require('node:test');
 const assert = require('node:assert');
@@ -45,80 +45,137 @@ describe('the fixed enquiry script', () => {
     return { sends, crm };
   }
 
-  test('three messages, then silence', async (t) => {
-    const before = config.ai.dmMode;
+  const DETAILS = 'Amit\nPune\n5 kW\n4 hours';
+
+  function useScript(t) {
+    const before = { mode: config.ai.dmMode, delay: config.ai.replyDelayMs, gap: config.ai.replyGapMs };
     config.ai.dmMode = 'script';
-    t.after(() => { config.ai.dmMode = before; db.close();
+    // The real pause is seconds per reply; these tests are about what is said.
+    config.ai.replyDelayMs = 0;
+    config.ai.replyGapMs = 0;
+    t.after(() => {
+      config.ai.dmMode = before.mode;
+      config.ai.replyDelayMs = before.delay;
+      config.ai.replyGapMs = before.gap;
+      mock.restoreAll(); db.close();
       for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true }); });
+  }
 
-    const { sends } = await converse([
-      'Hi',
-      'Amit\namit@x.com\nAcme\nPune',
-      'what is the price?',
-      'hello?'
+  test('option 1: menu, partner details, closing, then silence', async (t) => {
+    useScript(t);
+    const { sends } = await converse(['Hi', '1', DETAILS, 'what is the price?', 'hello?']);
+
+    assert.deepEqual(sends, [
+      assistant.DM_GREETING,
+      assistant.DM_DETAILS[1],
+      assistant.DM_CLOSING
     ]);
-
-    assert.equal(sends.length, 3, `expected 3 replies, got ${sends.length}`);
-    assert.match(sends[0], /thanks for reaching out to Iconiq Energy/);
-    assert.match(sends[1], /1\. Name/);
-    assert.equal(sends[2], assistant.DM_CLOSING);
   });
 
-  test('the closing line is exactly what was asked for', () => {
+  test('option 2: menu, order details, closing, then silence', async (t) => {
+    useScript(t);
+    const { sends } = await converse(['Hello', '2', 'Amit\nPune\nAcme\nYes\nLuminous', 'ok']);
+
+    assert.deepEqual(sends, [
+      assistant.DM_GREETING,
+      assistant.DM_DETAILS[2],
+      assistant.DM_CLOSING
+    ]);
+  });
+
+  test('the messages are worded exactly as the team wrote them', () => {
+    assert.match(assistant.DM_GREETING, /^Hi, thanks for reaching out to Iconiq Energy\./);
+    assert.match(assistant.DM_GREETING,
+      /1\. I want to become a Channel Partner \(Dealer \/ Distributor\) of Hybrid Solutions\n2\. I want to place an Order for Personal \/ Commercial Use$/);
+    assert.match(assistant.DM_DETAILS[1], /3\. Load Capacity \(in kW\) \n4\. Backup required \(in Hrs\)$/);
+    assert.match(assistant.DM_DETAILS[2], /3\. Company Name\n4\. Are you currently a Dealer \/ Distributor of another Brand\?\n5\. Please share the Brand name$/);
     assert.equal(assistant.DM_CLOSING,
       'Thanks for sharing your details. Our team will get in touch with you.');
   });
 
-  test('no model call is made anywhere in the script', async (t) => {
-    const before = config.ai.dmMode;
-    config.ai.dmMode = 'script';
-    const chat = mock.method(openrouter, 'chat', async () => 'should never run');
-    t.after(() => { config.ai.dmMode = before; mock.restoreAll(); db.close();
-      for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true }); });
+  test('a reply that is not 1 or 2 is asked once more, then left alone', async (t) => {
+    useScript(t);
+    const { sends } = await converse(['Hi', 'I want inverter', 'price?', '2', 'Amit\nPune\nAcme\nNo\n-']);
 
-    await converse(['Hi', 'Amit\namit@x.com\nAcme\nPune', 'and again']);
+    assert.deepEqual(sends, [
+      assistant.DM_GREETING,
+      assistant.DM_MENU_REMINDER,
+      // 'price?' — the reminder has been said once already, so nothing.
+      assistant.DM_DETAILS[2],
+      assistant.DM_CLOSING
+    ]);
+  });
+
+  test('only a whole-message choice counts', async (t) => {
+    useScript(t);
+    for (const reply of ['1', ' 1 ', '1.', '1)', '*1*', 'Option 1', '1️⃣']) {
+      const { sends } = await converse(['Hi', reply]);
+      assert.equal(sends[1], assistant.DM_DETAILS[1], `"${reply}" should choose option 1`);
+    }
+    for (const reply of ['I have 1 question', '12', '3', 'one']) {
+      const { sends } = await converse(['Hi', reply]);
+      assert.equal(sends[1], assistant.DM_MENU_REMINDER, `"${reply}" is not a choice`);
+    }
+  });
+
+  test('no model call is made anywhere in the script', async (t) => {
+    useScript(t);
+    const chat = mock.method(openrouter, 'chat', async () => 'should never run');
+
+    await converse(['Hi', 'x', '1', DETAILS, 'and again']);
 
     assert.equal(chat.mock.callCount(), 0, 'the script must cost nothing to run');
   });
 
-  test('a restart mid-enquiry does not start over from the greeting', async (t) => {
-    // The step is decided from what the customer has actually sent, read from
-    // the database — not from memory, which a redeploy wipes.
-    const before = config.ai.dmMode;
-    config.ai.dmMode = 'script';
-    t.after(() => { config.ai.dmMode = before; db.close();
-      for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true }); });
-
+  /** Seed a conversation as if the bot had restarted part-way through it. */
+  async function resumeAfter(rows, text) {
     db.close();
     for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
     db.init();
 
-    // They have already been greeted; the bot then restarted.
     repo.dmThreads.upsert(CHAT, '+919000000077');
-    repo.dmMessages.create({ waMessageId: 'r1', chatId: CHAT, direction: 'in', body: 'Hi' });
-    repo.dmMessages.create({ waMessageId: 'r2', chatId: CHAT, direction: 'out', body: 'greeting' });
+    for (const [i, [direction, body]] of rows.entries()) {
+      repo.dmMessages.create({ waMessageId: 'seed' + i, chatId: CHAT, direction, body });
+    }
 
     const sends = [];
     const o = new Orchestrator({ crm: { configured: false },
-      whatsapp: { async reply({ text }) { sends.push(text); return true; } } });
-
+      whatsapp: { async reply({ text: sent }) { sends.push(sent); return true; } } });
     await o.handleDirect(normalise({
-      key: { id: 'r3', remoteJid: CHAT, fromMe: false },
-      message: { conversation: 'Amit\namit@x.com\nAcme\nPune' }, messageTimestamp: 1
+      key: { id: 'resume', remoteJid: CHAT, fromMe: false },
+      message: { conversation: text }, messageTimestamp: 1
     }));
     await o.settled();
+    return sends;
+  }
 
-    assert.deepEqual(sends, [assistant.DM_CLOSING],
-      'their second message should get the closing line, not the greeting again');
+  test('a restart mid-enquiry carries on where it was', async (t) => {
+    // The step is decided from what the bot has already sent, read from the
+    // database — not from memory, which a redeploy wipes.
+    useScript(t);
+
+    assert.deepEqual(await resumeAfter([['in', 'Hi'], ['out', assistant.DM_GREETING]], '2'),
+      [assistant.DM_DETAILS[2]], 'a choice after a restart gets its details, not the greeting');
+
+    assert.deepEqual(await resumeAfter([
+      ['in', 'Hi'], ['out', assistant.DM_GREETING], ['in', '1'], ['out', assistant.DM_DETAILS[1]]
+    ], DETAILS), [assistant.DM_CLOSING]);
+  });
+
+  test('someone asked for details by the old script still gets the closing line', async (t) => {
+    // Greeted before the menu went live, answering after it.
+    useScript(t);
+    const sends = await resumeAfter([
+      ['in', 'Hi'], ['out', 'old greeting'], ['out', assistant.PREVIOUS_DM_DETAILS_REQUEST]
+    ], 'Amit\namit@x.com\nAcme\nPune');
+
+    assert.deepEqual(sends, [assistant.DM_CLOSING]);
   });
 
   test('messages recovered after an outage do not use up the script', async (t) => {
     // 18 Nov 2026: two messages recovered on re-link were filed without a reply,
     // and the customer's next message was counted as their third — silence.
-    const before = config.ai.dmMode;
-    config.ai.dmMode = 'script';
-    t.after(() => { config.ai.dmMode = before; db.close();
-      for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true }); });
+    useScript(t);
 
     db.close();
     for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
@@ -143,12 +200,46 @@ describe('the fixed enquiry script', () => {
 
     await o.handleDirect(say('live1', 'hi'));
     await o.settled();
-    assert.equal(sends.length, 2, 'the first live message gets the greeting');
-    assert.match(sends[0], /thanks for reaching out to Iconiq Energy/);
+    assert.deepEqual(sends, [assistant.DM_GREETING], 'the first live message gets the menu');
 
-    await o.handleDirect(say('live2', 'Amit\namit@x.com\nAcme\nPune'));
+    await o.handleDirect(say('live2', '1'));
+    await o.handleDirect(say('live3', DETAILS));
     await o.settled();
-    assert.equal(sends[2], assistant.DM_CLOSING);
+    assert.deepEqual(sends.slice(1), [assistant.DM_DETAILS[1], assistant.DM_CLOSING]);
+  });
+
+  test('the chosen option is saved to the CRM as a remark, once', async (t) => {
+    useScript(t);
+    const before = config.ai.extractFields;
+    config.ai.extractFields = false;
+    t.after(() => { config.ai.extractFields = before; });
+
+    db.close();
+    for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
+    db.init();
+
+    const remarks = [];
+    const crm = {
+      configured: true,
+      async findByPhone() { return { status: 'none', lead: null }; },
+      async createLead() { return { lead: { id: 'LEAD' }, deferred: {}, dropped: [] }; },
+      async addLeadMessage() { return {}; },
+      async updateLead() { return { lead: null, dropped: [] }; },
+      async addRemark(leadId, text) { remarks.push([leadId, text]); return {}; }
+    };
+    const o = new Orchestrator({ crm,
+      whatsapp: { async reply() { return true; } } });
+
+    for (const [i, text] of ['Hi', '1', DETAILS, 'thanks'].entries()) {
+      await o.handleDirect(normalise({
+        key: { id: 'rm' + i, remoteJid: CHAT, fromMe: false },
+        message: { conversation: text }, messageTimestamp: 1
+      }));
+    }
+    await o.settled();
+
+    assert.deepEqual(remarks,
+      [['LEAD', 'Enquiry type: Channel Partner (Dealer / Distributor)']]);
   });
 });
 
@@ -287,8 +378,7 @@ describe('starting a chat over', () => {
     await o.handleDirect(say('after-reset'));
     await o.settled();
 
-    assert.equal(sends.length, 2, 'after a reset it greets them again');
-    assert.match(sends[0], /thanks for reaching out to Iconiq Energy/);
+    assert.deepEqual(sends, [assistant.DM_GREETING], 'after a reset it greets them again');
   });
 });
 
@@ -381,7 +471,7 @@ describe('a LID mistaken for a phone number never becomes a lead', () => {
 describe('the bot does not answer instantly', () => {
   const CHAT_D = '919000000088@s.whatsapp.net';
 
-  test('it waits before the first reply, and between the two', async (t) => {
+  test('it waits before replying', async (t) => {
     // Replying in microseconds is what left the third message showing
     // "Waiting for this message": WhatsApp had not finished settling the
     // session for the message it had just delivered.
@@ -412,9 +502,8 @@ describe('the bot does not answer instantly', () => {
     }));
     await o.settled();
 
-    assert.equal(at.length, 2);
-    assert.ok(at[0] >= 120, `first reply came after ${at[0]}ms, expected a pause`);
-    assert.ok(at[1] - at[0] >= 60, `no gap between the two (${at[1] - at[0]}ms)`);
+    assert.equal(at.length, 1);
+    assert.ok(at[0] >= 120, `the reply came after ${at[0]}ms, expected a pause`);
   });
 
   test('a delay of zero sends immediately, for tests and for tuning', async (t) => {

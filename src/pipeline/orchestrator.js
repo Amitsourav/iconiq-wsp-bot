@@ -49,6 +49,36 @@ const AI_UNAVAILABLE_REPLY =
 /** Wait, skipping the timer entirely when the delay is off. */
 const pause = (ms) => (ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : null);
 
+/**
+ * The menu option a reply picks, or null.
+ *
+ * The whole message must be the choice — same rule as a command. "1", "1.",
+ * "option 2" or the keycap emoji count; "I have 1 question" does not, because
+ * reading a number out of a sentence would send someone the wrong form.
+ */
+function menuChoice(text) {
+  const reply = String(text || '').toLowerCase().replace(/[*_~]/g, '').trim();
+  const match = reply.match(/^(?:option\s*)?([12])(?:\ufe0f?\u20e3)?\s*[.)]?$/);
+  return match ? Number(match[1]) : null;
+}
+
+/** Whether a bot message is one of the details requests, old or new. */
+function isDetailsRequest(body) {
+  return Object.values(assistant.DM_DETAILS).includes(body)
+    || body === assistant.PREVIOUS_DM_DETAILS_REQUEST;
+}
+
+/** Which option's details the bot sent in this conversation, if any. */
+function enquiryOption(rows) {
+  for (const row of rows) {
+    if (row.direction !== 'out') continue;
+    for (const [option, body] of Object.entries(assistant.DM_DETAILS)) {
+      if (row.body === body) return Number(option);
+    }
+  }
+  return null;
+}
+
 class Orchestrator {
   /**
    * @param {{ crm: import('../crm/client').CrmClient, whatsapp: object }} deps
@@ -872,6 +902,7 @@ class Orchestrator {
         // Every message, not just the first: the conversation view has to keep
         // up with the conversation.
         await this.syncDmToCrm(message.chatId);
+        await this.noteDmEnquiryType(message.chatId);
         await this.captureDmFields(message.chatId);
       }).catch((error) => logger.error(
         `CRM work failed for ${message.chatId}: ${error.message}`));
@@ -1000,43 +1031,94 @@ class Orchestrator {
   }
 
   /**
-   * The fixed three-message enquiry script.
+   * The fixed enquiry script: a greeting with a two-option menu.
    *
-   *   their 1st message  ->  the greeting, then the details to send
-   *   their 2nd message  ->  thanks, a person will be in touch
-   *   after that         ->  nothing
+   *   their 1st message          ->  the greeting and menu
+   *   they reply 1 or 2          ->  the details for that option
+   *   they reply anything else   ->  "Please reply with 1 or 2", once only
+   *   they send their details    ->  thanks, a person will be in touch
+   *   after that                 ->  nothing
    *
    * Silence afterwards is the point. The bot has said everything it can stand
    * behind, and a customer who keeps writing is now talking to the team — every
    * word still reaches the CRM, so nothing is lost by not answering. Repeating
    * the thank-you instead would read as a machine that has stopped listening.
+   * The menu reminder is sent once for the same reason.
    *
-   * Which message to send is decided from the database rather than from memory,
-   * so a restart in the middle of an enquiry does not start it again from the
-   * greeting.
+   * The step is decided from what the bot has already sent, read from the
+   * database rather than memory, so a restart mid-enquiry carries on where it
+   * was instead of greeting them again.
    *
-   * It is keyed on the bot's own first reply, not on how many messages the
-   * customer has sent. Counting everything they sent meant messages recovered
-   * after an outage — filed, never answered — used up the script: on
-   * 18 Nov 2026 a customer with two recovered messages wrote again, was counted
-   * as on their third, and got silence instead of a greeting. Until the bot has
-   * said something, the customer has not been greeted, however much is waiting.
+   * It is keyed on the bot's own messages, not on how many the customer has
+   * sent. Counting everything they sent meant messages recovered after an
+   * outage — filed, never answered — used up the script: on 18 Nov 2026 a
+   * customer with two recovered messages wrote again, was counted as on their
+   * third, and got silence instead of a greeting. Until the bot has said
+   * something, the customer has not been greeted, however much is waiting.
    *
    * @private
    */
   async replyFromScript(message, rawMessage) {
-    const rows = repo.dmMessages.recentForChat(message.chatId, 200);
-    const firstReply = rows.findIndex((row) => row.direction === 'out');
-    const sinceGreeting = firstReply === -1 ? 0
-      : rows.slice(firstReply).filter((row) => row.direction === 'in').length;
+    const sent = repo.dmMessages.recentForChat(message.chatId, 200)
+      .filter((row) => row.direction === 'out')
+      .map((row) => row.body);
+    const last = sent[sent.length - 1];
 
-    const parts = firstReply === -1 ? [assistant.DM_GREETING, assistant.DM_DETAILS_REQUEST]
-      : sinceGreeting === 1 ? [assistant.DM_CLOSING]
-        : [];
+    let part = null;
 
-    if (!parts.length) return;
+    if (!sent.length) {
+      part = assistant.DM_GREETING;
+    } else if (last === assistant.DM_GREETING || last === assistant.DM_MENU_REMINDER) {
+      const option = menuChoice(message.text);
+      if (option) {
+        part = assistant.DM_DETAILS[option];
+      } else if (!sent.includes(assistant.DM_MENU_REMINDER)) {
+        part = assistant.DM_MENU_REMINDER;
+      }
+    } else if (isDetailsRequest(last)) {
+      part = assistant.DM_CLOSING;
+    }
+    // Anything else — the closing already sent, or a conversation the script
+    // did not start — is answered by a person, not the bot.
 
-    await this.sendDmParts(message, rawMessage, parts);
+    if (!part) return;
+
+    await this.sendDmParts(message, rawMessage, [part]);
+  }
+
+  /**
+   * Record which menu option they chose as a CRM remark, once per lead.
+   *
+   * Read back from the details request the bot sent rather than from the
+   * customer's "1" or "2", so it only ever records a choice the bot actually
+   * acted on. Runs on the CRM queue after the lead exists; a lead that cannot
+   * be created yet gets it on a later message, because nothing is marked done
+   * until the remark is in.
+   *
+   * @private
+   */
+  async noteDmEnquiryType(chatId) {
+    if (!this.crm.configured) return;
+
+    const thread = repo.dmThreads.byChatId(chatId);
+    if (!thread?.crm_lead_id) return;
+    if (repo.dmThreads.captured(chatId).enquiry_type_remark) return;
+
+    const option = enquiryOption(repo.dmMessages.recentForChat(chatId, 200));
+    if (!option) return;
+
+    try {
+      await this.crm.addRemark(thread.crm_lead_id,
+        `Enquiry type: ${assistant.DM_ENQUIRY_TYPES[option]}`, `enquiry:${chatId}`);
+      // Kept with the captured fields so a lead deleted in the CRM — which
+      // clears them — gets the remark again on its replacement.
+      repo.dmThreads.setCaptured(chatId, { enquiry_type_remark: true });
+      logger.info(`DM lead ${thread.phone || chatId}: enquiry type `
+        + `${assistant.DM_ENQUIRY_TYPES[option]}`);
+    } catch (error) {
+      if (this.forgetDeletedLead(chatId, error)) return;
+      logger.warn(`Enquiry type not sent to the CRM yet for ${chatId}: ${error.message}`);
+    }
   }
 
   /**

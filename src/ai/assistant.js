@@ -78,33 +78,57 @@ How to gather it:
 ${iconiqKnowledge}`;
 
 /**
- * Fixed opening message sent as the very first reply in a new DM
- * conversation, before any AI-generated response. Kept as a literal string
- * (not model-generated) so every new conversation starts identically.
+ * The first reply in a new DM conversation: who we are, then a two-option menu.
+ *
+ * A menu rather than one long form, because the team asks a would-be dealer
+ * different things from a customer placing an order, and asking both sets of
+ * questions of everyone made the form long enough to go unanswered.
  */
-const DM_GREETING = `Hi, thanks for reaching out to Iconiq Energy. We have a complete range of -
-1.⁠ ⁠IP66 Hybrid Inverters (3-30 kW)
-2.⁠ ⁠⁠LFP Batteries LV & HV (5.12 kWh to 161 kWh)
-3.⁠ ⁠⁠BESS solutions.
+const DM_GREETING = `Hi, thanks for reaching out to Iconiq Energy. We offer a Premium range of IP66 Hybrid Inverters, Lithium Batteries & BESS Solutions. 
 
-Product Datasheets & Company Profile - https://linktr.ee/iconiqenergy.in
+Please select one of the following - 
 
-Please share the following details so we can help you better.`;
+1. I want to become a Channel Partner (Dealer / Distributor) of Hybrid Solutions
+2. I want to place an Order for Personal / Commercial Use`;
 
 /**
- * Sent straight after the greeting, as its own message.
- *
- * The greeting ends by asking for "the following details", so this is what it
- * is pointing at — the two are one thought split across two bubbles, which is
- * how the team wanted it and how people read WhatsApp.
- *
- * Every line here maps to a CRM field the extractor knows (full_name, email,
- * organization, city), so what a customer writes back lands in the record
- * rather than only in the transcript. The technical side — load, backup,
- * existing solar and DG — is asked conversationally instead, because it needs
- * follow-up questions a form cannot ask.
+ * The details asked for after each menu option, worded exactly as the team
+ * wrote them (18 Nov 2026). Keyed by the option number the customer replies with.
  */
-const DM_DETAILS_REQUEST = `Please share:
+const DM_DETAILS = {
+  1: `Please share the following details - 
+1. Name
+2. City
+3. Load Capacity (in kW) 
+4. Backup required (in Hrs)`,
+  2: `Please share the following details - 
+1. Name
+2. City
+3. Company Name
+4. Are you currently a Dealer / Distributor of another Brand?
+5. Please share the Brand name`
+};
+
+/**
+ * What each option means, for the CRM remark that records which one was chosen.
+ * The wording mirrors the menu so a counsellor can match it to the chat.
+ */
+const DM_ENQUIRY_TYPES = {
+  1: 'Channel Partner (Dealer / Distributor)',
+  2: 'Order for Personal / Commercial Use'
+};
+
+/** Sent once if the reply to the menu is not 1 or 2. Never repeated. */
+const DM_MENU_REMINDER = 'Please reply with 1 or 2';
+
+/**
+ * The details request the script sent before the menu existed.
+ *
+ * Never sent again. Kept only so that a customer who was asked for it before
+ * the change, and answers after it, still gets the closing line instead of
+ * silence.
+ */
+const PREVIOUS_DM_DETAILS_REQUEST = `Please share:
 
 1. Name -
 2. E-Mail -
@@ -170,15 +194,13 @@ async function reply(chatId, userText) {
 async function replyDirect(chatId, userText) {
   const history = historyFor(chatId);
 
-  // First contact is two fixed messages and no model call: the greeting, then
-  // the details it asks for. Returned together so the caller sends them as two
-  // WhatsApp messages rather than one long one.
+  // First contact is the fixed greeting and menu, with no model call.
   if (history.length === 0) {
     history.push(
       { role: 'user', content: userText },
-      { role: 'assistant', content: `${DM_GREETING}\n\n${DM_DETAILS_REQUEST}` }
+      { role: 'assistant', content: DM_GREETING }
     );
-    return [DM_GREETING, DM_DETAILS_REQUEST];
+    return [DM_GREETING];
   }
 
   const messages = [
@@ -198,4 +220,13 @@ async function replyDirect(chatId, userText) {
   return answer;
 }
 
-module.exports = { reply, replyDirect, DM_GREETING, DM_DETAILS_REQUEST, DM_CLOSING };
+module.exports = {
+  reply,
+  replyDirect,
+  DM_GREETING,
+  DM_DETAILS,
+  DM_ENQUIRY_TYPES,
+  DM_MENU_REMINDER,
+  PREVIOUS_DM_DETAILS_REQUEST,
+  DM_CLOSING
+};

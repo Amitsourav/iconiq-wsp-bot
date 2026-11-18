@@ -121,25 +121,19 @@ describe('extraction cannot write what a typed label could not', () => {
   });
 });
 
-describe('first contact sends the greeting and the details request', () => {
+describe('first contact sends the greeting and menu', () => {
   const assistant = require('../src/ai/assistant');
 
-  test('two separate messages, no model call', async (t) => {
+  test('one fixed message, no model call', async (t) => {
     t.after(() => mock.restoreAll());
     const chat = mock.method(openrouter, 'chat', async () => 'should not be called');
 
     const reply = await assistant.replyDirect('first-contact@s.whatsapp.net', 'Hi');
 
-    assert.ok(Array.isArray(reply), 'first contact should be two messages');
-    assert.equal(reply.length, 2);
+    assert.deepEqual(reply, [assistant.DM_GREETING]);
     assert.match(reply[0], /thanks for reaching out to Iconiq Energy/);
-    assert.match(reply[0], /linktr\.ee\/iconiqenergy\.in/);
-    // The greeting asks for "the following details"; the second message is them.
-    assert.match(reply[0], /Please share the following details/);
-    assert.match(reply[1], /Name/);
-    assert.match(reply[1], /E-Mail/);
-    assert.match(reply[1], /Company Name/);
-    assert.match(reply[1], /City/);
+    assert.match(reply[0], /1\. I want to become a Channel Partner/);
+    assert.match(reply[0], /2\. I want to place an Order/);
     assert.equal(chat.mock.callCount(), 0, 'the fixed opening must not cost a model call');
   });
 

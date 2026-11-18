@@ -315,3 +315,65 @@ that would otherwise read as a mangled phone number.
 
 Recorded as `unreadable_number` so the panel shows it apart from ordinary
 non-leads, and sent once per message even if WhatsApp redelivers it (S2).
+
+
+---
+
+## Amendment, 2026-11-18 — direct messages: a greeting with a 1/2 menu
+
+The bot also answers people who message its own number directly (`DM_MODE=script`).
+It sends only the fixed messages below, in this order, then stays silent. The exact
+text lives in `src/ai/assistant.js`.
+
+**Their first message** gets the greeting and menu:
+
+```
+Hi, thanks for reaching out to Iconiq Energy. We offer a Premium range of IP66 Hybrid Inverters, Lithium Batteries & BESS Solutions.
+
+Please select one of the following -
+
+1. I want to become a Channel Partner (Dealer / Distributor) of Hybrid Solutions
+2. I want to place an Order for Personal / Commercial Use
+```
+
+**They reply `1`:**
+
+```
+Please share the following details -
+1. Name
+2. City
+3. Load Capacity (in kW)
+4. Backup required (in Hrs)
+```
+
+**They reply `2`:**
+
+```
+Please share the following details -
+1. Name
+2. City
+3. Company Name
+4. Are you currently a Dealer / Distributor of another Brand?
+5. Please share the Brand name
+```
+
+**They reply anything else** to the menu, once only:
+
+```
+Please reply with 1 or 2
+```
+
+**They send their details:**
+
+```
+Thanks for sharing your details. Our team will get in touch with you.
+```
+
+**After that:** nothing. Everything they write still reaches the CRM.
+
+The choice must be the whole message: `1`, `1.`, `Option 1`, or 1️⃣ count, but
+"I have 1 question" does not. The option chosen is recorded on the lead as a CRM
+remark, `Enquiry type: Channel Partner (Dealer / Distributor)` or
+`Enquiry type: Order for Personal / Commercial Use`. Messages recovered after an
+outage are filed, not answered. The step is read from the database, so a restart
+mid-enquiry carries on where it left off.
