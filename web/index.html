@@ -371,7 +371,7 @@ const views = {
   },
 
   async groups() {
-    const [{ groups }, { banks }] = await Promise.all([
+    const [{ groups, left = 0 }, { banks }] = await Promise.all([
       api('/groups'), api('/banks').catch(() => ({ banks: [] }))
     ]);
     if (!groups.length) {
@@ -384,6 +384,8 @@ const views = {
       <p class="hint">Switch on the groups to watch. <b>In-house</b> groups create
         CRM leads. <b>Bank</b> groups record which lender a lead was sent to —
         the bot never posts in those.</p>
+      ${left ? `<p class="hint">${left} group(s) this number is no longer in are
+        hidden.</p>` : ''}
       <div class="scroll"><table>
         <tr><th>Group</th><th>Watch</th><th>Type</th><th>Bank</th><th>Replies</th></tr>
         ${groups.map((g) => `<tr>

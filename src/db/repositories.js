@@ -5,27 +5,79 @@ const { get } = require('./index');
 
 /** Groups we monitor. */
 const groups = {
-  /** Insert or refresh a group's cached name. Does not change its active flag. */
+  /**
+   * Insert or refresh a group's cached name. Does not change its active flag.
+   *
+   * Seeing a group at all — in WhatsApp's list, or a message arriving from it —
+   * means the number is a member, so this also clears any earlier `left_at`.
+   */
   upsert(waGroupId, name) {
     get().prepare(`
       INSERT INTO groups (wa_group_id, name) VALUES (?, ?)
       ON CONFLICT(wa_group_id) DO UPDATE SET
         name = excluded.name,
+        left_at = NULL,
         updated_at = datetime('now')
     `).run(waGroupId, name);
     return this.byWaId(waGroupId);
+  },
+
+  /**
+   * Bring the table in line with WhatsApp's own list of the groups this number
+   * is in: refresh every listed group, and mark every other one as left.
+   *
+   * An empty list is refreshed but never swept. WhatsApp answering "no groups"
+   * is far more likely to be a hiccup than the number having left all of them,
+   * and marking everything left on a bad answer would switch off monitoring for
+   * every active group at once.
+   *
+   * @param {{id: string, name: string}[]} list - from WhatsAppClient.listGroups()
+   * @returns {{ members: number, markedLeft: number }}
+   */
+  syncMembership(list) {
+    const ids = (list || []).map((g) => g.id).filter(Boolean);
+
+    return get().transaction(() => {
+      for (const group of list || []) this.upsert(group.id, group.name);
+      if (!ids.length) return { members: 0, markedLeft: 0 };
+
+      const { changes } = get().prepare(`
+        UPDATE groups SET left_at = datetime('now'), updated_at = datetime('now')
+        WHERE left_at IS NULL
+          AND wa_group_id NOT IN (SELECT value FROM json_each(?))
+      `).run(JSON.stringify(ids));
+
+      return { members: ids.length, markedLeft: changes };
+    })();
   },
 
   byWaId(waGroupId) {
     return get().prepare('SELECT * FROM groups WHERE wa_group_id = ?').get(waGroupId) || null;
   },
 
+  /** Every group ever seen, left or not — for resolving a lead's group by id. */
   all() {
     return get().prepare('SELECT * FROM groups ORDER BY is_active DESC, name').all();
   },
 
+  /** The groups the number is in now — what the panel lists. */
+  members() {
+    return get().prepare(
+      'SELECT * FROM groups WHERE left_at IS NULL ORDER BY is_active DESC, name'
+    ).all();
+  },
+
+  /** How many groups the number has left, so the panel can say they are hidden. */
+  leftCount() {
+    return get().prepare('SELECT COUNT(*) AS n FROM groups WHERE left_at IS NOT NULL').get().n;
+  },
+
+  /**
+   * Monitored groups the number is still in. A group it has left cannot deliver
+   * anything, and asking the phone to replay history for one is a wasted request.
+   */
   active() {
-    return get().prepare('SELECT * FROM groups WHERE is_active = 1').all();
+    return get().prepare('SELECT * FROM groups WHERE is_active = 1 AND left_at IS NULL').all();
   },
 
   setActive(id, isActive) {

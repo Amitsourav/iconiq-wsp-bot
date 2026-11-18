@@ -372,6 +372,22 @@ const MIGRATIONS = [
             = substr(chat_id, 1, instr(chat_id, '@') - 1);
     `
   }
+  ,{
+    name: '008_group_membership',
+    sql: `
+      -- When the number stopped being a member of a group. NULL means it still is.
+      --
+      -- Groups were only ever added to this table, never removed, so the panel
+      -- listed every group any linked number had ever been in. During setup on
+      -- 10 Sep 2026 a different number was linked for a few minutes, and its 42
+      -- loan and bank groups sat in the Iconiq panel for two months afterwards,
+      -- looking like groups this number belongs to.
+      --
+      -- Marked rather than deleted: leads and bank shares reference groups by
+      -- id, and a group that is rejoined gets its settings back.
+      ALTER TABLE groups ADD COLUMN left_at TEXT;
+    `
+  }
 ];
 
 module.exports = { MIGRATIONS };

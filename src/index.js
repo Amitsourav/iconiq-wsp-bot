@@ -103,7 +103,10 @@ async function main() {
   whatsapp.on('ready', async () => {
     try {
       const groups = await whatsapp.listGroups();
-      for (const group of groups) repo.groups.upsert(group.id, group.name);
+      const { markedLeft } = repo.groups.syncMembership(groups);
+      if (markedLeft) {
+        logger.info(`${markedLeft} group(s) this number is no longer in — hidden from the panel`);
+      }
 
       const active = repo.groups.active();
       logger.info(`In ${groups.length} group(s); monitoring ${active.length}`);

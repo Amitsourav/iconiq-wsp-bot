@@ -153,10 +153,8 @@ function createServer({ whatsapp, crm, orchestrator, jobs = {} }) {
   // ---- groups -------------------------------------------------------------
   api.get('/groups', wrap(async (req, res) => {
     // Refresh names from WhatsApp so the list reflects reality, then return ours.
-    if (whatsapp.connected) {
-      for (const g of await whatsapp.listGroups()) repo.groups.upsert(g.id, g.name);
-    }
-    res.json({ groups: repo.groups.all() });
+    if (whatsapp.connected) repo.groups.syncMembership(await whatsapp.listGroups());
+    res.json({ groups: repo.groups.members(), left: repo.groups.leftCount() });
   }));
 
   api.put('/groups/:id', (req, res) => {
