@@ -1011,19 +1011,27 @@ class Orchestrator {
    * word still reaches the CRM, so nothing is lost by not answering. Repeating
    * the thank-you instead would read as a machine that has stopped listening.
    *
-   * Which message to send is decided by counting what the customer has actually
-   * sent, read from the database rather than from memory, so a restart in the
-   * middle of an enquiry does not start it again from the greeting.
+   * Which message to send is decided from the database rather than from memory,
+   * so a restart in the middle of an enquiry does not start it again from the
+   * greeting.
+   *
+   * It is keyed on the bot's own first reply, not on how many messages the
+   * customer has sent. Counting everything they sent meant messages recovered
+   * after an outage — filed, never answered — used up the script: on
+   * 18 Nov 2026 a customer with two recovered messages wrote again, was counted
+   * as on their third, and got silence instead of a greeting. Until the bot has
+   * said something, the customer has not been greeted, however much is waiting.
    *
    * @private
    */
   async replyFromScript(message, rawMessage) {
-    const inbound = repo.dmMessages
-      .recentForChat(message.chatId, 50)
-      .filter((row) => row.direction === 'in').length;
+    const rows = repo.dmMessages.recentForChat(message.chatId, 200);
+    const firstReply = rows.findIndex((row) => row.direction === 'out');
+    const sinceGreeting = firstReply === -1 ? 0
+      : rows.slice(firstReply).filter((row) => row.direction === 'in').length;
 
-    const parts = inbound <= 1 ? [assistant.DM_GREETING, assistant.DM_DETAILS_REQUEST]
-      : inbound === 2 ? [assistant.DM_CLOSING]
+    const parts = firstReply === -1 ? [assistant.DM_GREETING, assistant.DM_DETAILS_REQUEST]
+      : sinceGreeting === 1 ? [assistant.DM_CLOSING]
         : [];
 
     if (!parts.length) return;

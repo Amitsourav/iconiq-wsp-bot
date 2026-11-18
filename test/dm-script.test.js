@@ -111,6 +111,45 @@ describe('the fixed enquiry script', () => {
     assert.deepEqual(sends, [assistant.DM_CLOSING],
       'their second message should get the closing line, not the greeting again');
   });
+
+  test('messages recovered after an outage do not use up the script', async (t) => {
+    // 18 Nov 2026: two messages recovered on re-link were filed without a reply,
+    // and the customer's next message was counted as their third — silence.
+    const before = config.ai.dmMode;
+    config.ai.dmMode = 'script';
+    t.after(() => { config.ai.dmMode = before; db.close();
+      for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true }); });
+
+    db.close();
+    for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
+    db.init();
+
+    const sends = [];
+    const o = new Orchestrator({ crm: { configured: false },
+      whatsapp: { async reply({ text }) { sends.push(text); return true; } } });
+    const say = (id, text, replayed) => {
+      const m = normalise({
+        key: { id, remoteJid: CHAT, fromMe: false },
+        message: { conversation: text }, messageTimestamp: 1
+      });
+      if (replayed) m.replayed = true;
+      return m;
+    };
+
+    await o.handleDirect(say('rec1', 'Hi', true));
+    await o.handleDirect(say('rec2', 'Hi', true));
+    await o.settled();
+    assert.equal(sends.length, 0, 'recovered messages are filed, not answered');
+
+    await o.handleDirect(say('live1', 'hi'));
+    await o.settled();
+    assert.equal(sends.length, 2, 'the first live message gets the greeting');
+    assert.match(sends[0], /thanks for reaching out to Iconiq Energy/);
+
+    await o.handleDirect(say('live2', 'Amit\namit@x.com\nAcme\nPune'));
+    await o.settled();
+    assert.equal(sends[2], assistant.DM_CLOSING);
+  });
 });
 
 describe('a lead deleted in the CRM does not break the chat forever', () => {
