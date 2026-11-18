@@ -14,8 +14,10 @@ const fs = require('fs');
 const path = require('path');
 const EventEmitter = require('events');
 const {
-  default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers
+  default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers,
+  decryptPollVote, jidNormalizedUser
 } = require('@whiskeysockets/baileys');
+const crypto = require('crypto');
 const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
@@ -801,6 +803,85 @@ class WhatsAppClient extends EventEmitter {
   }
 
   /**
+   * Send a poll into a direct chat.
+   *
+   * The poll's secret is generated here and handed back, because a vote can
+   * only be read with it and Baileys does not keep it. The caller stores it.
+   *
+   * @param {{ chatId: string, name: string, options: string[] }} params
+   * @returns {Promise<{ id: string, secret: Buffer }|null>} null if not sent
+   */
+  async sendPoll({ chatId, name, options }) {
+    if (!this.connected) {
+      logger.warn('Not connected — poll skipped');
+      return null;
+    }
+
+    const limit = this.withinRateLimit(chatId);
+    if (!limit.ok) {
+      logger.error(`Send rate limit hit for ${limit.scope} (${limit.cap}/min) — `
+        + `poll to ${chatId} suppressed`);
+      return null;
+    }
+
+    try {
+      this.sendTimestamps.push({ at: Date.now(), chatId });
+      const secret = crypto.randomBytes(32);
+      const sent = await this.sock.sendMessage(chatId, {
+        poll: { name, values: options, selectableCount: 1, messageSecret: secret }
+      });
+      if (!sent?.key?.id) return null;
+      this.ownMessageIds.add(sent.key.id);
+      return { id: sent.key.id, secret };
+    } catch (error) {
+      logger.error(`Failed to send poll: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Read which option a poll vote chose.
+   *
+   * The vote is encrypted against the poll creator's and the voter's JIDs, and
+   * WhatsApp may use either the phone-number form or the LID form of each — a
+   * LID-addressed chat usually means LIDs. The decryption is authenticated, so
+   * trying each pairing is safe: only the right one decrypts at all.
+   *
+   * @param {{ chatId: string, senderPnJid?: string, senderJid?: string,
+   *           pollVote: { pollId: string, encPayload: Uint8Array, encIv: Uint8Array } }} message
+   * @param {{ secret: Buffer, options: string[] }} poll
+   * @returns {number|null} the 1-based option chosen, or null (unreadable, or
+   *   the vote was taken back)
+   */
+  readPollVote(message, poll) {
+    const me = this.sock?.user || {};
+    const creators = unique([me.id, me.lid]);
+    const voters = unique([message.chatId, message.senderPnJid, message.senderJid]);
+
+    for (const pollCreatorJid of creators) {
+      for (const voterJid of voters) {
+        let vote;
+        try {
+          vote = decryptPollVote(message.pollVote, {
+            pollCreatorJid, voterJid, pollMsgId: message.pollVote.pollId, pollEncKey: poll.secret
+          });
+        } catch {
+          continue;
+        }
+
+        const chosen = (vote.selectedOptions || []).map((h) => Buffer.from(h).toString('hex'));
+        const index = poll.options.findIndex((option) =>
+          chosen.includes(crypto.createHash('sha256').update(option).digest('hex')));
+        return index === -1 ? null : index + 1;
+      }
+    }
+
+    logger.warn(`Could not decrypt a poll vote from ${message.chatId} on poll `
+      + `${message.pollVote.pollId}`);
+    return null;
+  }
+
+  /**
    * Every group this number belongs to.
    * @returns {Promise<{id: string, name: string, participants: number}[]>}
    */
@@ -827,6 +908,11 @@ class WhatsAppClient extends EventEmitter {
     this.state = 'disconnected';
     logger.info('WhatsApp client stopped');
   }
+}
+
+/** Distinct, normalised JIDs, dropping blanks. */
+function unique(jids) {
+  return [...new Set(jids.filter(Boolean).map((jid) => jidNormalizedUser(jid)))];
 }
 
 module.exports = { WhatsAppClient, withinReplayWindow, soundsDeaf };

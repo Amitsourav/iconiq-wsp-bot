@@ -388,6 +388,24 @@ const MIGRATIONS = [
       ALTER TABLE groups ADD COLUMN left_at TEXT;
     `
   }
+  ,{
+    name: '009_dm_polls',
+    sql: `
+      -- The menu polls the bot has sent in direct chats.
+      --
+      -- A vote on a WhatsApp poll arrives encrypted with a key that only the
+      -- poll's sender holds. Baileys no longer keeps that key for us, so it is
+      -- kept here: without it, a customer tapping an option after a restart
+      -- would be tapping into nothing.
+      CREATE TABLE dm_polls (
+        wa_message_id TEXT PRIMARY KEY,
+        chat_id       TEXT NOT NULL,
+        secret        TEXT NOT NULL,   -- base64, the poll's 32-byte messageSecret
+        options       TEXT NOT NULL,   -- JSON array of option texts, in order
+        created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `
+  }
 ];
 
 module.exports = { MIGRATIONS };

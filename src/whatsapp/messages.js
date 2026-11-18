@@ -54,6 +54,22 @@ function contextOf(message) {
 }
 
 /**
+ * The encrypted vote in a poll update, or null.
+ *
+ * Carries no text — the choice is encrypted with the poll's own key, which
+ * only the bot holds — so it is passed on as-is for the client to decrypt.
+ */
+function pollVoteOf(message) {
+  const update = message?.pollUpdateMessage;
+  if (!update?.pollCreationMessageKey?.id || !update.vote?.encPayload) return null;
+  return {
+    pollId: update.pollCreationMessageKey.id,
+    encPayload: update.vote.encPayload,
+    encIv: update.vote.encIv
+  };
+}
+
+/**
  * Normalise a Baileys message into the shape the pipeline works with.
  *
  * @param {object} raw - a message from the `messages.upsert` event
@@ -141,6 +157,7 @@ function normalise(raw) {
     // unlike v1's comparison of quoted message text.
     quotedId: context?.stanzaId || null,
     quotedText: textOf(context?.quotedMessage) || null,
+    pollVote: pollVoteOf(unwrap(raw.message)),
     timestamp: Number(raw.messageTimestamp) || Math.floor(Date.now() / 1000)
   };
 }

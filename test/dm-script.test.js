@@ -22,6 +22,10 @@ const { normalise } = require('../src/whatsapp/messages');
 const { Orchestrator } = require('../src/pipeline/orchestrator');
 const assistant = require('../src/ai/assistant');
 
+// The menu as text, so these tests read as plain sends. The poll form is
+// covered in dm-poll.test.js.
+config.ai.dmMenu = 'text';
+
 describe('the fixed enquiry script', () => {
   const CHAT = '919000000077@s.whatsapp.net';
 

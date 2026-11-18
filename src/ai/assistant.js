@@ -77,19 +77,36 @@ How to gather it:
 
 ${iconiqKnowledge}`;
 
+/** The opening line of every new DM conversation, before the menu. */
+const DM_INTRO = 'Hi, thanks for reaching out to Iconiq Energy. We offer a Premium range of '
+  + 'IP66 Hybrid Inverters, Lithium Batteries & BESS Solutions. ';
+
+/** The menu's question, and its two options in order: option 1, option 2. */
+const DM_MENU_QUESTION = 'Please select one of the following - ';
+const DM_MENU_OPTIONS = [
+  'I want to become a Channel Partner (Dealer / Distributor) of Hybrid Solutions',
+  'I want to place an Order for Personal / Commercial Use'
+];
+
 /**
- * The first reply in a new DM conversation: who we are, then a two-option menu.
+ * The menu as text. Sent when the menu is not a poll (DM_MENU=text, or a poll
+ * that failed to send), and recorded as what a menu poll said, so the
+ * conversation reads the same in the CRM either way.
+ */
+const DM_MENU_TEXT = `${DM_MENU_QUESTION}
+
+${DM_MENU_OPTIONS.map((option, i) => `${i + 1}. ${option}`).join('\n')}`;
+
+/**
+ * The whole first reply as one text message: who we are, then the menu.
  *
  * A menu rather than one long form, because the team asks a would-be dealer
  * different things from a customer placing an order, and asking both sets of
  * questions of everyone made the form long enough to go unanswered.
  */
-const DM_GREETING = `Hi, thanks for reaching out to Iconiq Energy. We offer a Premium range of IP66 Hybrid Inverters, Lithium Batteries & BESS Solutions. 
+const DM_GREETING = `${DM_INTRO}
 
-Please select one of the following - 
-
-1. I want to become a Channel Partner (Dealer / Distributor) of Hybrid Solutions
-2. I want to place an Order for Personal / Commercial Use`;
+${DM_MENU_TEXT}`;
 
 /**
  * The details asked for after each menu option, worded exactly as the team
@@ -118,8 +135,8 @@ const DM_ENQUIRY_TYPES = {
   2: 'Order for Personal / Commercial Use'
 };
 
-/** Sent once if the reply to the menu is not 1 or 2. Never repeated. */
-const DM_MENU_REMINDER = 'Please reply with 1 or 2';
+/** Sent once if the reply to the menu is not a choice. Never repeated. */
+const DM_MENU_REMINDER = 'Please select an option above, or reply with 1 or 2';
 
 /**
  * The details request the script sent before the menu existed.
@@ -223,6 +240,10 @@ async function replyDirect(chatId, userText) {
 module.exports = {
   reply,
   replyDirect,
+  DM_INTRO,
+  DM_MENU_QUESTION,
+  DM_MENU_OPTIONS,
+  DM_MENU_TEXT,
   DM_GREETING,
   DM_DETAILS,
   DM_ENQUIRY_TYPES,

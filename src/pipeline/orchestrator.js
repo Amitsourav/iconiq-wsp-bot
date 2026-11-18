@@ -49,6 +49,20 @@ const AI_UNAVAILABLE_REPLY =
 /** Wait, skipping the timer entirely when the delay is off. */
 const pause = (ms) => (ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : null);
 
+/** Stands for the menu poll in a list of DM parts to send. */
+const MENU_POLL = Symbol('menu poll');
+
+/**
+ * The bot's last message when it is waiting for a menu choice. The intro is
+ * included for the case where it went but the menu after it did not.
+ */
+const MENU_SHOWN = new Set([
+  assistant.DM_GREETING,
+  assistant.DM_INTRO,
+  assistant.DM_MENU_TEXT,
+  assistant.DM_MENU_REMINDER
+]);
+
 /**
  * The menu option a reply picks, or null.
  *
@@ -833,6 +847,10 @@ class Orchestrator {
     try {
       if (message.fromMe) return;
 
+      // A tap on the menu poll carries no text of its own. Turned into the
+      // option it chose, it is handled — and recorded — like a typed reply.
+      if (message.pollVote && !this.readMenuVote(message)) return;
+
       const text = (message.text || '').trim();
       if (!text) return;
 
@@ -959,6 +977,16 @@ class Orchestrator {
       // own thinking time had been providing this pause by accident.
       await pause(index === 0 ? config.ai.replyDelayMs : config.ai.replyGapMs);
 
+      if (part === MENU_POLL) {
+        // Recorded as the menu's text: the poll itself has no body to store,
+        // and this is what it said.
+        if (await this.sendMenuPoll(message)) {
+          this.recordDmMessage(message.chatId, 'out', assistant.DM_MENU_TEXT,
+            `out:${message.id}:${index}`);
+        }
+        continue;
+      }
+
       const sent = await this.whatsapp.reply({
         // replyTo, not chatId: a chat addressed by LID must be answered on the
         // sender's phone JID, or the reply is accepted without error and never
@@ -1064,26 +1092,91 @@ class Orchestrator {
       .map((row) => row.body);
     const last = sent[sent.length - 1];
 
-    let part = null;
+    let parts = [];
 
     if (!sent.length) {
-      part = assistant.DM_GREETING;
-    } else if (last === assistant.DM_GREETING || last === assistant.DM_MENU_REMINDER) {
-      const option = menuChoice(message.text);
+      parts = config.ai.dmMenu === 'poll'
+        ? [assistant.DM_INTRO, MENU_POLL]
+        : [assistant.DM_GREETING];
+    } else if (MENU_SHOWN.has(last)) {
+      const option = message.pollChoice || menuChoice(message.text);
       if (option) {
-        part = assistant.DM_DETAILS[option];
+        parts = [assistant.DM_DETAILS[option]];
       } else if (!sent.includes(assistant.DM_MENU_REMINDER)) {
-        part = assistant.DM_MENU_REMINDER;
+        parts = [assistant.DM_MENU_REMINDER];
       }
-    } else if (isDetailsRequest(last)) {
-      part = assistant.DM_CLOSING;
+    } else if (isDetailsRequest(last) && !message.pollChoice) {
+      // A vote here is someone changing their answer on a poll already acted
+      // on — not their details, so it does not earn the closing line.
+      parts = [assistant.DM_CLOSING];
     }
     // Anything else — the closing already sent, or a conversation the script
     // did not start — is answered by a person, not the bot.
 
-    if (!part) return;
+    if (!parts.length) return;
 
-    await this.sendDmParts(message, rawMessage, [part]);
+    await this.sendDmParts(message, rawMessage, parts);
+  }
+
+  /**
+   * Turn a vote on the menu poll into the option it chose.
+   *
+   * Sets `pollChoice`, and `text` to the option itself so the conversation
+   * reads properly in the panel and the CRM. A vote that cannot be read — a
+   * poll we have no record of, or a vote taken back — is dropped: there is
+   * nothing in it to record.
+   *
+   * @returns {boolean} whether the vote was read
+   * @private
+   */
+  readMenuVote(message) {
+    const poll = repo.dmPolls.byId(message.pollVote.pollId);
+    if (!poll) {
+      logger.info(`Vote from ${message.chatId} on a poll we did not send — ignored`);
+      return false;
+    }
+
+    const option = this.whatsapp.readPollVote(message, poll);
+    if (!option) return false;
+
+    message.pollChoice = option;
+    message.text = `${option}. ${poll.options[option - 1]}`;
+    logger.info(`${message.chatId} chose option ${option} on the menu poll`);
+    return true;
+  }
+
+  /**
+   * Send the menu as a poll, and keep its key so votes on it can be read.
+   *
+   * Falls back to the menu as text if the poll does not go: a customer left
+   * with a greeting and no menu has nothing to answer.
+   *
+   * @returns {Promise<boolean>} whether either form was sent
+   * @private
+   */
+  async sendMenuPoll(message) {
+    const chatId = message.replyTo || message.chatId;
+    // Any failure here, thrown or returned, ends in the text menu — and never
+    // in an exception that would also skip creating the lead.
+    let sent = null;
+    try {
+      sent = await this.whatsapp.sendPoll({
+        chatId,
+        name: assistant.DM_MENU_QUESTION.replace(/\s*-\s*$/, ''),
+        options: assistant.DM_MENU_OPTIONS
+      });
+    } catch (error) {
+      logger.warn(`Menu poll to ${message.chatId} failed: ${error.message}`);
+    }
+
+    if (sent) {
+      repo.dmPolls.create({ waMessageId: sent.id, chatId: message.chatId,
+        secret: sent.secret, options: assistant.DM_MENU_OPTIONS });
+      return true;
+    }
+
+    logger.warn(`Menu poll to ${message.chatId} did not send — sending the menu as text`);
+    return this.whatsapp.reply({ groupId: chatId, text: assistant.DM_MENU_TEXT, mentions: [] });
   }
 
   /**

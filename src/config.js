@@ -229,6 +229,18 @@ const config = {
     dmMode: (process.env.DM_MODE || 'script').toLowerCase() === 'ai' ? 'ai' : 'script',
 
     /**
+     * How the script's 1/2 menu is shown.
+     *
+     *   'poll'  a WhatsApp poll the customer can tap (the default)
+     *   'text'  a numbered list they reply to with 1 or 2
+     *
+     * Either way, typing 1 or 2 works. The text form is kept as a lever because
+     * polls are the newer path: if votes ever stop arriving, setting
+     * DM_MENU=text puts the menu back to plain text without a deploy.
+     */
+    dmMenu: (process.env.DM_MENU || 'poll').toLowerCase() === 'text' ? 'text' : 'poll',
+
+    /**
      * How long to wait before answering a direct message, in milliseconds.
      *
      * Replying the instant a message is decrypted is too fast for WhatsApp.

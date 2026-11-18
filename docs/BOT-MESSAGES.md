@@ -325,7 +325,10 @@ The bot also answers people who message its own number directly (`DM_MODE=script
 It sends only the fixed messages below, in this order, then stays silent. The exact
 text lives in `src/ai/assistant.js`.
 
-**Their first message** gets the greeting and menu:
+**Their first message** gets the greeting, then the menu as a **WhatsApp poll**
+they can tap: the question "Please select one of the following" and the two options
+below. With `DM_MENU=text`, or if the poll fails to send, the menu goes as plain text
+instead, exactly as shown:
 
 ```
 Hi, thanks for reaching out to Iconiq Energy. We offer a Premium range of IP66 Hybrid Inverters, Lithium Batteries & BESS Solutions.
@@ -360,7 +363,7 @@ Please share the following details -
 **They reply anything else** to the menu, once only:
 
 ```
-Please reply with 1 or 2
+Please select an option above, or reply with 1 or 2
 ```
 
 **They send their details:**
@@ -371,7 +374,11 @@ Thanks for sharing your details. Our team will get in touch with you.
 
 **After that:** nothing. Everything they write still reaches the CRM.
 
-The choice must be the whole message: `1`, `1.`, `Option 1`, or 1️⃣ count, but
+Tapping a poll option and typing the number work the same. A vote changed after the
+details were asked for, or taken back, gets no reply. The poll's key is kept in the
+`dm_polls` table so votes can still be read after a restart.
+
+A typed choice must be the whole message: `1`, `1.`, `Option 1`, or 1️⃣ count, but
 "I have 1 question" does not. The option chosen is recorded on the lead as a CRM
 remark, `Enquiry type: Channel Partner (Dealer / Distributor)` or
 `Enquiry type: Order for Personal / Commercial Use`. Messages recovered after an

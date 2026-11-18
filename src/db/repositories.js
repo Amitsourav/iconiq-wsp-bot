@@ -806,7 +806,29 @@ const logs = {
   }
 };
 
+/** Menu polls sent in direct chats, kept so their votes can be decrypted. */
+const dmPolls = {
+  /** @param {{ waMessageId: string, chatId: string, secret: Buffer, options: string[] }} poll */
+  create({ waMessageId, chatId, secret, options }) {
+    get().prepare(`
+      INSERT OR IGNORE INTO dm_polls (wa_message_id, chat_id, secret, options)
+      VALUES (?, ?, ?, ?)
+    `).run(waMessageId, chatId, Buffer.from(secret).toString('base64'), JSON.stringify(options));
+  },
+
+  /** @returns {{ chatId: string, secret: Buffer, options: string[] }|null} */
+  byId(waMessageId) {
+    const row = get().prepare('SELECT * FROM dm_polls WHERE wa_message_id = ?').get(waMessageId);
+    if (!row) return null;
+    return {
+      chatId: row.chat_id,
+      secret: Buffer.from(row.secret, 'base64'),
+      options: JSON.parse(row.options)
+    };
+  }
+};
+
 module.exports = {
   groups, employees, leads, leadUpdates, bankShares, bankMessages,
-  skipped, dmThreads, dmMessages, settings, logs
+  skipped, dmThreads, dmMessages, dmPolls, settings, logs
 };
