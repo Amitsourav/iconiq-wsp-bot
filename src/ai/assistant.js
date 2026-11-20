@@ -135,6 +135,12 @@ const DM_ENQUIRY_TYPES = {
   2: 'Order for Personal / Commercial Use'
 };
 
+/** What each option is stored as in the CRM's enquiry_type field. */
+const DM_ENQUIRY_VALUES = {
+  1: 'channel_partner',
+  2: 'personal_order'
+};
+
 /** Sent once if the reply to the menu is not a choice. Never repeated. */
 const DM_MENU_REMINDER = 'Please select an option above, or reply with 1 or 2';
 
@@ -247,6 +253,7 @@ module.exports = {
   DM_GREETING,
   DM_DETAILS,
   DM_ENQUIRY_TYPES,
+  DM_ENQUIRY_VALUES,
   DM_MENU_REMINDER,
   PREVIOUS_DM_DETAILS_REQUEST,
   DM_CLOSING

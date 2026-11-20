@@ -1180,13 +1180,18 @@ class Orchestrator {
   }
 
   /**
-   * Record which menu option they chose as a CRM remark, once per lead.
+   * Record which menu option they chose: the lead's `enquiry_type` field, so
+   * the team can filter on it, and a remark, so it reads in the lead's history.
    *
    * Read back from the details request the bot sent rather than from the
    * customer's "1" or "2", so it only ever records a choice the bot actually
-   * acted on. Runs on the CRM queue after the lead exists; a lead that cannot
-   * be created yet gets it on a later message, because nothing is marked done
-   * until the remark is in.
+   * acted on — and since that is one of two fixed options, the field is set
+   * from a closed vocabulary, never from prose.
+   *
+   * Each half is done once per lead and marked separately, so a failure in one
+   * is retried on the next message without repeating the other. Nothing is
+   * marked done until the CRM has it, so a lead that cannot be created yet
+   * gets both later.
    *
    * @private
    */
@@ -1195,24 +1200,62 @@ class Orchestrator {
 
     const thread = repo.dmThreads.byChatId(chatId);
     if (!thread?.crm_lead_id) return;
-    if (repo.dmThreads.captured(chatId).enquiry_type_remark) return;
+
+    const done = repo.dmThreads.captured(chatId);
+    if ('enquiry_type' in done && done.enquiry_type_remark) return;
 
     const option = enquiryOption(repo.dmMessages.recentForChat(chatId, 200));
     if (!option) return;
 
+    const label = assistant.DM_ENQUIRY_TYPES[option];
+
     try {
-      await this.crm.addRemark(thread.crm_lead_id,
-        `Enquiry type: ${assistant.DM_ENQUIRY_TYPES[option]}`, `enquiry:${chatId}`);
-      // Kept with the captured fields so a lead deleted in the CRM — which
-      // clears them — gets the remark again on its replacement.
-      repo.dmThreads.setCaptured(chatId, { enquiry_type_remark: true });
-      logger.info(`DM lead ${thread.phone || chatId}: enquiry type `
-        + `${assistant.DM_ENQUIRY_TYPES[option]}`);
+      if (!('enquiry_type' in done)) {
+        const value = assistant.DM_ENQUIRY_VALUES[option];
+        await this.crm.updateLead(thread.crm_lead_id, { enquiry_type: value });
+        // Kept with the captured fields so a lead deleted in the CRM — which
+        // clears them — gets it again on its replacement.
+        repo.dmThreads.setCaptured(chatId, { enquiry_type: value });
+      }
+
+      if (!done.enquiry_type_remark) {
+        await this.crm.addRemark(thread.crm_lead_id, `Enquiry type: ${label}`,
+          `enquiry:${chatId}`);
+        repo.dmThreads.setCaptured(chatId, { enquiry_type_remark: true });
+      }
+
+      logger.info(`DM lead ${thread.phone || chatId}: enquiry type ${label}`);
     } catch (error) {
       if (this.forgetDeletedLead(chatId, error)) return;
       logger.warn(`Enquiry type not sent to the CRM yet for ${chatId}: ${error.message}`);
     }
   }
+
+  /**
+   * Set `enquiry_type` on every lead that chose an option before the field
+   * existed. Those already carry the remark, so only the field is written.
+   *
+   * Safe to run on every start: a lead that has it already is skipped without
+   * a CRM call, so after the first run this costs nothing.
+   *
+   * @returns {Promise<number>} how many leads were updated
+   */
+  async backfillEnquiryTypes() {
+    if (!this.crm.configured) return 0;
+
+    let updated = 0;
+    for (const chatId of repo.dmThreads.withLead()) {
+      if ('enquiry_type' in repo.dmThreads.captured(chatId)) continue;
+      if (!enquiryOption(repo.dmMessages.recentForChat(chatId, 200))) continue;
+
+      await this.serialise(`crm:${chatId}`, () => this.noteDmEnquiryType(chatId));
+      if ('enquiry_type' in repo.dmThreads.captured(chatId)) updated += 1;
+    }
+
+    if (updated) logger.info(`Enquiry type filled in on ${updated} existing lead(s)`);
+    return updated;
+  }
+
 
   /**
    * Send anything not yet in the CRM's conversation view.

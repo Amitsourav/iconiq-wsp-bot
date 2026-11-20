@@ -212,7 +212,23 @@ describe('the fixed enquiry script', () => {
     assert.deepEqual(sends.slice(1), [assistant.DM_DETAILS[1], assistant.DM_CLOSING]);
   });
 
-  test('the chosen option is saved to the CRM as a remark, once', async (t) => {
+  /** A CRM that records what the bot writes, for the enquiry-type tests. */
+  function recordingCrm() {
+    const writes = { updates: [], remarks: [] };
+    return {
+      writes,
+      crm: {
+        configured: true,
+        async findByPhone() { return { status: 'none', lead: null }; },
+        async createLead() { return { lead: { id: 'LEAD' }, deferred: {}, dropped: [] }; },
+        async addLeadMessage() { return {}; },
+        async updateLead(leadId, fields) { writes.updates.push([leadId, fields]); return { lead: {}, dropped: [] }; },
+        async addRemark(leadId, text) { writes.remarks.push([leadId, text]); return {}; }
+      }
+    };
+  }
+
+  test('the chosen option is saved to the CRM as a field and a remark, once', async (t) => {
     useScript(t);
     const before = config.ai.extractFields;
     config.ai.extractFields = false;
@@ -222,19 +238,10 @@ describe('the fixed enquiry script', () => {
     for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
     db.init();
 
-    const remarks = [];
-    const crm = {
-      configured: true,
-      async findByPhone() { return { status: 'none', lead: null }; },
-      async createLead() { return { lead: { id: 'LEAD' }, deferred: {}, dropped: [] }; },
-      async addLeadMessage() { return {}; },
-      async updateLead() { return { lead: null, dropped: [] }; },
-      async addRemark(leadId, text) { remarks.push([leadId, text]); return {}; }
-    };
-    const o = new Orchestrator({ crm,
-      whatsapp: { async reply() { return true; } } });
+    const { crm, writes } = recordingCrm();
+    const o = new Orchestrator({ crm, whatsapp: { async reply() { return true; } } });
 
-    for (const [i, text] of ['Hi', '1', DETAILS, 'thanks'].entries()) {
+    for (const [i, text] of ['Hi', '2', 'Amit\nPune\nAcme\nYes\nLuminous', 'thanks'].entries()) {
       await o.handleDirect(normalise({
         key: { id: 'rm' + i, remoteJid: CHAT, fromMe: false },
         message: { conversation: text }, messageTimestamp: 1
@@ -242,9 +249,70 @@ describe('the fixed enquiry script', () => {
     }
     await o.settled();
 
-    assert.deepEqual(remarks,
-      [['LEAD', 'Enquiry type: Channel Partner (Dealer / Distributor)']]);
+    assert.deepEqual(writes.updates, [['LEAD', { enquiry_type: 'personal_order' }]]);
+    assert.deepEqual(writes.remarks,
+      [['LEAD', 'Enquiry type: Order for Personal / Commercial Use']]);
   });
+
+  test('a failed field write is retried without repeating the remark', async (t) => {
+    useScript(t);
+    db.close();
+    for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
+    db.init();
+
+    const { crm, writes } = recordingCrm();
+    let fail = true;
+    const update = crm.updateLead;
+    crm.updateLead = async (...args) => {
+      if (fail) throw new Error('Network error: fetch failed');
+      return update(...args);
+    };
+    const o = new Orchestrator({ crm, whatsapp: { async reply() { return true; } } });
+
+    repo.dmThreads.upsert(CHAT, '+919000000077');
+    repo.dmThreads.setCrmLead(CHAT, 'LEAD');
+    repo.dmMessages.create({ waMessageId: 'f1', chatId: CHAT, direction: 'out', body: assistant.DM_DETAILS[1] });
+
+    await o.noteDmEnquiryType(CHAT);
+    assert.equal(writes.updates.length, 0);
+    assert.equal(writes.remarks.length, 0, 'nothing is marked done until the field is in');
+
+    fail = false;
+    await o.noteDmEnquiryType(CHAT);
+    await o.noteDmEnquiryType(CHAT);
+    assert.deepEqual(writes.updates, [['LEAD', { enquiry_type: 'channel_partner' }]]);
+    assert.equal(writes.remarks.length, 1);
+  });
+
+  test('leads that chose before the field existed are backfilled, once', async (t) => {
+    useScript(t);
+    db.close();
+    for (const s of ['', '-wal', '-shm']) fs.rmSync(TEST_DB + s, { force: true });
+    db.init();
+
+    // Chose option 1 last week: has the remark, but not the field.
+    repo.dmThreads.upsert(CHAT, '+919000000077');
+    repo.dmThreads.setCrmLead(CHAT, 'OLD-1');
+    repo.dmThreads.setCaptured(CHAT, { enquiry_type_remark: true });
+    repo.dmMessages.create({ waMessageId: 'b1', chatId: CHAT, direction: 'out', body: assistant.DM_DETAILS[1] });
+
+    // Old-script lead: never saw the menu, so there is nothing to fill in.
+    const OLD = '919000000099@s.whatsapp.net';
+    repo.dmThreads.upsert(OLD, '+919000000099');
+    repo.dmThreads.setCrmLead(OLD, 'OLD-2');
+    repo.dmMessages.create({ waMessageId: 'b2', chatId: OLD, direction: 'out', body: assistant.PREVIOUS_DM_DETAILS_REQUEST });
+
+    const { crm, writes } = recordingCrm();
+    const o = new Orchestrator({ crm, whatsapp: { async reply() { return true; } } });
+
+    assert.equal(await o.backfillEnquiryTypes(), 1);
+    assert.deepEqual(writes.updates, [['OLD-1', { enquiry_type: 'channel_partner' }]]);
+    assert.equal(writes.remarks.length, 0, 'the remark is already there');
+
+    assert.equal(await o.backfillEnquiryTypes(), 0, 'the second run does nothing');
+    assert.equal(writes.updates.length, 1);
+  });
+
 });
 
 describe('a lead deleted in the CRM does not break the chat forever', () => {
@@ -538,5 +606,35 @@ describe('the bot does not answer instantly', () => {
     await o.settled();
 
     assert.ok(Date.now() - started < 100, 'zero should mean no wait at all');
+  });
+});
+
+describe('dealer and brand answers', () => {
+  const { coerce } = require('../src/pipeline/labels');
+  const fields = require('../src/crm/fields');
+  const extract = require('../src/ai/extract');
+
+  test('both are fields the bot may read from a reply, and send', () => {
+    assert.ok('is_existing_dealer' in extract.EXTRACTABLE);
+    assert.ok('current_brand' in extract.EXTRACTABLE);
+    for (const f of ['enquiry_type', 'is_existing_dealer', 'current_brand']) {
+      assert.ok(fields.CREATE_FIELDS.has(f) && fields.UPDATE_FIELDS.has(f), f);
+    }
+  });
+
+  test('"are you a dealer" takes only a clear yes or no', () => {
+    assert.deepEqual(coerce('is_existing_dealer', 'Yes'), { ok: true, value: true });
+    assert.deepEqual(coerce('is_existing_dealer', 'nahi'), { ok: true, value: false });
+    assert.equal(coerce('is_existing_dealer', 'maybe later').ok, false);
+  });
+
+  test('enquiry_type takes only the two values the CRM accepts', () => {
+    assert.deepEqual(coerce('enquiry_type', 'channel_partner'), { ok: true, value: 'channel_partner' });
+    assert.equal(coerce('enquiry_type', 'dealer').ok, false);
+  });
+
+  test('a brand name is kept as written, within the CRM limit', () => {
+    assert.deepEqual(coerce('current_brand', ' Luminous '), { ok: true, value: 'Luminous' });
+    assert.equal(fields.MAX_LENGTH.current_brand, 100);
   });
 });

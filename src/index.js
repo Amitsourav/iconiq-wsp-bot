@@ -62,6 +62,11 @@ async function main() {
       const me = await crm.verifyTenant();
       await crm.loadUsers();
       logger.info(`CRM connected as ${me.email} — ${me.company_name} (${me.company_id})`);
+
+      // Leads that chose an option before enquiry_type existed in the CRM.
+      // In the background: it must never hold up the bot starting.
+      orchestrator.backfillEnquiryTypes().catch((error) =>
+        logger.warn(`Enquiry type backfill stopped: ${error.message}`));
     } catch (error) {
       if (/Wrong CRM tenant/.test(error.message)) {
         logger.error(error.message);

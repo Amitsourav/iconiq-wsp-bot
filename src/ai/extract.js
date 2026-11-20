@@ -41,7 +41,9 @@ const EXTRACTABLE = {
   solar_present: 'true only if they say they ALREADY have solar, false only if they say they do not',
   solar_capacity_kw: 'the size of their EXISTING solar in kW, as a number only',
   dg_available: 'true only if they say they have a diesel generator, false only if they say they do not',
-  dg_capacity_kva: 'the size of their existing DG in kVA, as a number only'
+  dg_capacity_kva: 'the size of their existing DG in kVA, as a number only',
+  is_existing_dealer: 'true only if they say they are CURRENTLY a dealer or distributor of another brand, false only if they say they are not',
+  current_brand: 'the brand they currently deal in or distribute, only if they name one'
 };
 
 const SYSTEM_PROMPT = `You read a WhatsApp conversation between a customer and Iconiq Energy (solar, hybrid inverters, batteries, BESS) and pull out only the facts the customer actually stated.

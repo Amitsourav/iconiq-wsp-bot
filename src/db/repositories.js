@@ -663,6 +663,13 @@ const dmThreads = {
     `).all(limit);
   },
 
+  /** Chat ids of every DM thread that has a CRM lead. */
+  withLead() {
+    return get().prepare(`
+      SELECT chat_id FROM dm_threads WHERE crm_lead_id IS NOT NULL ORDER BY updated_at
+    `).all().map((row) => row.chat_id);
+  },
+
   /** The CRM fields already written for this chat. */
   captured(chatId) {
     const row = this.byChatId(chatId);

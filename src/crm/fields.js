@@ -30,7 +30,11 @@ const ENERGY_FIELDS = [
   'load_capacity_kw', 'backup_duration_hours',
   'solar_present', 'solar_capacity_kw',
   'dg_available', 'dg_capacity_kva',
-  'expected_closure_month'
+  'expected_closure_month',
+  // Added for the DM menu, verified live 2026-11-20 on both create and update.
+  // enquiry_type is which option they picked; the other two answer the
+  // order form's "dealer of another brand?" and "brand name" questions.
+  'enquiry_type', 'is_existing_dealer', 'current_brand'
 ];
 
 /**
@@ -113,7 +117,8 @@ const MAX_LENGTH = {
   primary_university: 200,
   organization: 200,
   website: 200,
-  application_industry: 100
+  application_industry: 100,
+  current_brand: 100
 };
 
 /**
@@ -130,7 +135,9 @@ const LOCKED_LISTS = {
   bank_status: [
     'applied', 'docs_reviewed', 'under_review', 'loan_login', 'sanctioned',
     'pf_paid', 'disbursed'
-  ]
+  ],
+  // The CRM answers anything else with a 422.
+  enquiry_type: ['channel_partner', 'personal_order']
 };
 
 /**
@@ -265,6 +272,12 @@ const LABEL_MAP = {
   'generator': 'dg_available',
   'genset': 'dg_available',
   'dg capacity': 'dg_capacity_kva',
+  'existing dealer': 'is_existing_dealer',
+  'dealer': 'is_existing_dealer',
+  'distributor': 'is_existing_dealer',
+  'brand': 'current_brand',
+  'brand name': 'current_brand',
+  'current brand': 'current_brand',
   'dg kva': 'dg_capacity_kva',
   'kva': 'dg_capacity_kva',
   'generator capacity': 'dg_capacity_kva',
@@ -293,7 +306,7 @@ const NUMERIC_FIELDS = new Set([
  * not an answer to "do you have solar", and guessing that it is would put a
  * fact in the CRM the customer never stated. Use `Solar Capacity:` for the size.
  */
-const BOOLEAN_FIELDS = new Set(['solar_present', 'dg_available']);
+const BOOLEAN_FIELDS = new Set(['solar_present', 'dg_available', 'is_existing_dealer']);
 
 /** Words that unambiguously mean yes or no, including the common Hinglish ones. */
 const BOOLEAN_WORDS = {

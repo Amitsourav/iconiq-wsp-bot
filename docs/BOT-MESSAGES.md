@@ -379,8 +379,9 @@ details were asked for, or taken back, gets no reply. The poll's key is kept in 
 `dm_polls` table so votes can still be read after a restart.
 
 A typed choice must be the whole message: `1`, `1.`, `Option 1`, or 1️⃣ count, but
-"I have 1 question" does not. The option chosen is recorded on the lead as a CRM
-remark, `Enquiry type: Channel Partner (Dealer / Distributor)` or
+"I have 1 question" does not. The option chosen is saved on the lead in the CRM's
+`enquiry_type` field (`channel_partner` / `personal_order`), which the leads list
+can filter on, and also as a remark, `Enquiry type: Channel Partner (Dealer / Distributor)` or
 `Enquiry type: Order for Personal / Commercial Use`. Messages recovered after an
 outage are filed, not answered. The step is read from the database, so a restart
 mid-enquiry carries on where it left off.
