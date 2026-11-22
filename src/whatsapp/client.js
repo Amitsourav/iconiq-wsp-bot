@@ -161,6 +161,17 @@ class WhatsAppClient extends EventEmitter {
     this.recovering = false;
   }
 
+  /**
+   * Whether a chat is the number talking to itself (its own LID or phone).
+   * WhatsApp syncs a steady stream of those between the phone and its linked
+   * devices — every few seconds on 22 Nov 2026 — and none is a conversation.
+   */
+  isSelfChat(chatId) {
+    const user = (jid) => String(jid || '').split('@')[0].split(':')[0];
+    const id = user(chatId);
+    return Boolean(id) && (id === user(this.sock?.user?.id) || id === user(this.sock?.user?.lid));
+  }
+
   get connected() {
     return this.state === 'connected';
   }
@@ -687,8 +698,19 @@ class WhatsAppClient extends EventEmitter {
 
       // S1 — never react to our own output. Its replies contain no mention and no
       // phone number, and without this guard the bot can talk to itself.
-      if (message.fromMe || this.ownMessageIds.has(message.id)) {
+      if (this.ownMessageIds.has(message.id)) {
         this.ownMessageIds.delete(message.id);
+        continue;
+      }
+
+      // Sent from this number, but not by the bot: Meta's Business AI, or the
+      // team typing on the Iconiq phone. Never acted on — only recorded, so the
+      // conversation in our database and the CRM has both sides, and the
+      // customer's "Pune" can be read as the answer to "Which city?".
+      if (message.fromMe) {
+        if (!message.isGroup && !this.isSelfChat(message.chatId)) {
+          this.emit('own-message', message, raw);
+        }
         continue;
       }
 

@@ -25,6 +25,7 @@ const { LOCKED_LISTS } = require('../crm/fields');
 const commands = require('./commands');
 const { buildMyLeads } = require('./digest');
 const { ensureCrmLead, pushDmMessages } = require('./dmSync');
+const { describe } = require('../whatsapp/messages');
 const { BankHandler } = require('./bank');
 const { DuplicateLeadError, CrmClient } = require('../crm/client');
 const repo = require('../db/repositories');
@@ -871,7 +872,7 @@ class Orchestrator {
       if (message.pollVote && !this.readMenuVote(message)) return;
 
       const text = (message.text || '').trim();
-      if (!text) return;
+      if (!text) return this.noteUnreadable(message, rawMessage);
 
       // Record before acting, same principle as the group pipeline: capture the
       // customer's message even if the AI reply below is off, fails, or the
@@ -952,6 +953,59 @@ class Orchestrator {
     } catch (error) {
       logger.error(`Direct-message handling failed on ${message?.id}: ${error.message}`);
     }
+  }
+
+  /**
+   * A message sent from this number by someone other than the bot — Meta's
+   * Business AI, or the team on the Iconiq phone.
+   *
+   * Recorded as our side of the conversation and nothing more: never answered,
+   * never a lead on its own. It is what lets the transcript in the CRM read as
+   * a conversation, and lets extraction see the question a customer's answer
+   * belongs to. Queued on the chat's own queue, so it lands in order with the
+   * customer's messages.
+   *
+   * @param {object} message - normalised, fromMe
+   * @param {object} [rawMessage]
+   */
+  async handleOwnDirect(message, rawMessage) {
+    return this.serialise(message.chatId, async () => {
+      try {
+        const text = (message.text || '').trim();
+        if (!text) return this.noteUnreadable(message, rawMessage);
+
+        repo.dmThreads.upsert(message.chatId, phoneUtil.fromJidInternational(message.chatId));
+        if (!this.recordDmMessage(message.chatId, 'out', text, message.id)) return;
+
+        this.serialise(`crm:${message.chatId}`, () => this.syncDmToCrm(message.chatId))
+          .catch((error) => logger.error(`CRM work failed for ${message.chatId}: ${error.message}`));
+      } catch (error) {
+        logger.error(`Recording our own message ${message?.id} failed: ${error.message}`);
+      }
+    });
+  }
+
+  /**
+   * Say, once an hour per chat, that a message could not be read.
+   *
+   * These used to vanish without a word: a message that failed to decrypt, or
+   * a button or list type the reader did not know, came out as empty text and
+   * was dropped. On 22 Nov 2026 a customer's message arrived and was neither
+   * stored nor logged, and there was no way to tell which had happened. The
+   * log says what kind of message it was, never what it said.
+   *
+   * @private
+   */
+  noteUnreadable(message, rawMessage) {
+    if (message.pollVote) return;
+    this.unreadableLogged ??= new Map();
+    const key = `${message.chatId}:${message.fromMe ? 'ours' : 'theirs'}`;
+    const last = this.unreadableLogged.get(key) || 0;
+    if (Date.now() - last < 3_600_000) return;
+    this.unreadableLogged.set(key, Date.now());
+
+    logger.warn(`Could not read a ${message.fromMe ? 'business-side' : 'customer'} message in `
+      + `${message.chatId}: ${describe(rawMessage)} — not recorded. (Said once an hour per chat.)`);
   }
 
   /**

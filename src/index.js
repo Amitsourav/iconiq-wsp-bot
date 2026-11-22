@@ -93,6 +93,10 @@ async function main() {
     return orchestrator.handleDirect(message, raw);
   });
 
+  // Our side of a direct chat, typed by someone other than the bot — Meta's
+  // Business AI or the team on the phone. Recorded, never answered.
+  whatsapp.on('own-message', (message, raw) => orchestrator.handleOwnDirect(message, raw));
+
   // A reconnect means there was a window where WhatsApp may have pushed messages
   // to a connection that was no longer listening. It will not tell us what we
   // missed, so we ask the phone to replay from the last message we recorded.

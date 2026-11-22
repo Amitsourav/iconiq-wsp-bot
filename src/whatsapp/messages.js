@@ -7,36 +7,77 @@
 const phone = require('../pipeline/phone');
 const { config } = require('../config');
 
+/** The envelopes WhatsApp puts around a message's real content. */
+const WRAPPERS = [
+  'ephemeralMessage', 'viewOnceMessage', 'viewOnceMessageV2', 'viewOnceMessageV2Extension',
+  'documentWithCaptionMessage', 'editedMessage', 'botInvokeMessage', 'deviceSentMessage'
+];
+
+/**
+ * Unwrap the layers WhatsApp uses for disappearing, view-once, edited and
+ * relayed messages. They can nest, so this keeps going until none is left.
+ */
+function unwrap(message) {
+  let inner = message;
+  for (let depth = 0; inner && depth < 5; depth++) {
+    const key = WRAPPERS.find((k) => inner[k]?.message);
+    if (!key) break;
+    inner = inner[key].message;
+  }
+  return inner;
+}
+
 /**
  * Extract the text body from any message type that carries one.
+ *
+ * Includes the button, list and menu types. Meta's Business AI and the
+ * WhatsApp Business app's quick replies send those, and a customer tapping a
+ * button answers with one; read as plain text only, both sides of such a
+ * conversation came out empty and were dropped without a trace.
+ *
  * @param {object} message - the `message` object from a Baileys message
  * @returns {string|null}
  */
 function textOf(message) {
-  if (!message) return null;
+  const m = unwrap(message);
+  if (!m) return null;
 
-  return (
-    message.conversation ||
-    message.extendedTextMessage?.text ||
-    message.imageMessage?.caption ||
-    message.videoMessage?.caption ||
-    message.documentMessage?.caption ||
-    message.ephemeralMessage?.message?.conversation ||
-    message.ephemeralMessage?.message?.extendedTextMessage?.text ||
-    message.viewOnceMessage?.message?.conversation ||
-    message.viewOnceMessageV2?.message?.extendedTextMessage?.text ||
-    null
-  );
+  const interactive = m.interactiveMessage;
+  const parts = [
+    m.conversation,
+    m.extendedTextMessage?.text,
+    m.imageMessage?.caption,
+    m.videoMessage?.caption,
+    m.documentMessage?.caption,
+    // Messages with buttons or a list, as sent.
+    m.buttonsMessage?.contentText,
+    m.templateMessage?.hydratedTemplate?.hydratedContentText,
+    m.templateMessage?.hydratedFourRowTemplate?.hydratedContentText,
+    interactive?.header?.title && interactive?.body?.text
+      ? `${interactive.header.title}\n${interactive.body.text}` : interactive?.body?.text,
+    m.listMessage?.description || m.listMessage?.title,
+    // A tap on a button, list row or menu, as answered.
+    m.buttonsResponseMessage?.selectedDisplayText,
+    m.templateButtonReplyMessage?.selectedDisplayText,
+    m.listResponseMessage?.title,
+    m.interactiveResponseMessage?.body?.text
+  ];
+
+  const text = parts.find((p) => typeof p === 'string' && p.trim());
+  return text || null;
 }
 
-/** Unwrap the layers WhatsApp uses for disappearing and view-once messages. */
-function unwrap(message) {
-  return (
-    message?.ephemeralMessage?.message ||
-    message?.viewOnceMessage?.message ||
-    message?.viewOnceMessageV2?.message ||
-    message
-  );
+/**
+ * What a message is, for logging one we could not read: its content types
+ * and, when it is only a placeholder, why. Never its content.
+ * @param {object} raw - a Baileys message
+ * @returns {string}
+ */
+function describe(raw) {
+  const inner = unwrap(raw?.message);
+  const kinds = inner ? Object.keys(inner).filter((k) => k !== 'messageContextInfo') : [];
+  const stub = raw?.messageStubType ? ` stub=${raw.messageStubType}` : '';
+  return (kinds.join(',') || 'no content') + stub;
 }
 
 /**
@@ -184,4 +225,4 @@ function toMentionJids(e164List) {
     .map((e164) => `${e164.replace(/^\+/, '')}@s.whatsapp.net`);
 }
 
-module.exports = { normalise, textOf, contextOf, toMentionJids, unwrap };
+module.exports = { normalise, textOf, contextOf, toMentionJids, unwrap, describe };
