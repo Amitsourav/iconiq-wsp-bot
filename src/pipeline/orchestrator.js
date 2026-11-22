@@ -909,6 +909,12 @@ class Orchestrator {
         logger.info(`Identified ${message.chatId} as ${phone} — creating the lead now`);
       }
 
+      // WhatsApp never told us, so the bot asked; this may be the answer.
+      const typed = phone ? null : this.phoneFromAnswer(message.chatId, text);
+      if (typed) {
+        logger.info(`${message.chatId} typed their number (${typed}) — creating the lead now`);
+      }
+
       // Reply first, create the lead second. The CRM routinely takes 2-20s per
       // call and a customer waiting on a chatbot notices every one of them. The
       // conversation is already safe in our database by this point, so nothing
@@ -1106,9 +1112,13 @@ class Orchestrator {
    * @private
    */
   async replyFromScript(message, rawMessage) {
-    const sent = repo.dmMessages.recentForChat(message.chatId, 200)
+    const allSent = repo.dmMessages.recentForChat(message.chatId, 200)
       .filter((row) => row.direction === 'out')
       .map((row) => row.body);
+    // The phone-number question sits outside the script, so the step is read
+    // without it — otherwise asking would make the customer's details look
+    // like a reply to the question, and they would never get the closing line.
+    const sent = allSent.filter((body) => body !== assistant.DM_ASK_PHONE);
     const last = sent[sent.length - 1];
 
     let parts = [];
@@ -1132,9 +1142,52 @@ class Orchestrator {
     // Anything else — the closing already sent, or a conversation the script
     // did not start — is answered by a person, not the bot.
 
+    if (this.shouldAskForPhone(message.chatId, sent, allSent)) parts.push(assistant.DM_ASK_PHONE);
+
     if (!parts.length) return;
 
     await this.sendDmParts(message, rawMessage, parts);
+  }
+
+  /**
+   * Whether to ask this customer for their mobile number now.
+   *
+   * Only when WhatsApp has hidden it, only once, only in a chat the script
+   * started (so the bot never cuts into a conversation the team is having from
+   * the phone), and never with the greeting — the first thing a customer sees
+   * stays exactly the welcome the business wrote.
+   *
+   * @private
+   */
+  shouldAskForPhone(chatId, scriptSent, allSent) {
+    if (repo.dmThreads.byChatId(chatId)?.phone) return false;
+    if (allSent.includes(assistant.DM_ASK_PHONE)) return false;
+    return scriptSent.some((body) => body === assistant.DM_INTRO || body === assistant.DM_GREETING);
+  }
+
+  /**
+   * Read a mobile number the customer typed in answer to DM_ASK_PHONE.
+   *
+   * Only after the bot has asked, and only when the message holds exactly one
+   * number: the question is what makes a bare number mean "mine" rather than
+   * "my brother's", and two numbers cannot be told apart. phone.js does the
+   * validating, as everywhere else.
+   *
+   * @returns {string|null} the number saved, if any
+   * @private
+   */
+  phoneFromAnswer(chatId, text) {
+    const thread = repo.dmThreads.byChatId(chatId);
+    if (!thread || thread.phone) return null;
+
+    const asked = repo.dmMessages.recentForChat(chatId, 200)
+      .some((row) => row.direction === 'out' && row.body === assistant.DM_ASK_PHONE);
+    if (!asked) return null;
+
+    const numbers = phoneUtil.extract(text);
+    if (numbers.length !== 1) return null;
+
+    return repo.dmThreads.setPhone(chatId, numbers[0]) ? numbers[0] : null;
   }
 
   /**

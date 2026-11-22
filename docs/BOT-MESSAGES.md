@@ -385,3 +385,28 @@ can filter on, and also as a remark, `Enquiry type: Channel Partner (Dealer / Di
 `Enquiry type: Order for Personal / Commercial Use`. Messages recovered after an
 outage are filed, not answered. The step is read from the database, so a restart
 mid-enquiry carries on where it left off.
+
+---
+
+## Amendment, 2026-11-22 — asking for a hidden phone number
+
+Approved by the business on 22 Nov 2026.
+
+Some customers reach the bot under a hidden WhatsApp ID (a LID) with no phone number.
+Without a number the bot can't create a CRM lead, so the customer would never be
+followed up. For those chats only, the bot adds one message:
+
+```
+Please share your mobile number so our team can contact you.
+```
+
+- **When:** with the bot's next reply after the greeting, never with the greeting
+  itself. It's sent once per chat.
+- **Only if:** WhatsApp has not given the number, and the chat is one the bot's
+  script started. It never cuts into a chat the team is having from the phone.
+- **The script carries on as normal:** the question is ignored when deciding the next
+  step, so the customer still gets the details request and the closing line.
+- **Their answer:** if a later message holds exactly one valid mobile number, it is
+  saved and the CRM lead is created straight away. A number typed before the bot
+  asked, or two numbers in one message, is not taken. Without the question, a bare
+  number could be anyone's.

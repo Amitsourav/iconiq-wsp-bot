@@ -187,6 +187,32 @@ const config = {
   },
 
   /**
+   * Email alerts when the bot stops working (see src/alerts.js).
+   *
+   * Email rather than WhatsApp, because the failures that matter most — the
+   * number logged out, a QR waiting to be scanned — are exactly the ones in
+   * which the bot cannot send a WhatsApp message. From 15 to 21 Nov 2026 it
+   * was deaf and then logged out for six days and nobody was told.
+   *
+   * Sent through Resend's HTTP API: Railway blocks outbound SMTP on most
+   * plans, and HTTPS needs no extra dependency.
+   */
+  alerts: {
+    emailTo: (process.env.ALERT_EMAIL_TO || '').split(',').map((s) => s.trim()).filter(Boolean),
+    resendApiKey: process.env.RESEND_API_KEY,
+    emailFrom: process.env.ALERT_EMAIL_FROM || 'Iconiq WhatsApp bot <onboarding@resend.dev>',
+    // A QR waiting this long means nobody is scanning it.
+    qrMinutes: int(process.env.ALERT_QR_MINUTES, 10),
+    // Offline this long is not a blip.
+    offlineMinutes: int(process.env.ALERT_OFFLINE_MINUTES, 15),
+    // No customer message for this long, counted inside working hours
+    // (WA_ACTIVE_FROM_HOUR..WA_ACTIVE_UNTIL_HOUR). The number normally hears
+    // from 50-90 customers a day, so three working hours of nothing is a
+    // connection that is not delivering.
+    silenceHours: int(process.env.ALERT_SILENCE_HOURS, 3)
+  },
+
+  /**
    * AI conversational replies, via OpenRouter.
    *
    * Only covers DMs to the bot's number and non-bank groups. Bank groups are
@@ -311,6 +337,11 @@ function validate() {
 
   if (config.ai.enabled && !config.ai.openrouterApiKey) {
     fatal.push('AI_REPLY_ENABLED is true but OPENROUTER_API_KEY is not set.');
+  }
+
+  if (!config.alerts.emailTo.length || !config.alerts.resendApiKey) {
+    warnings.push('ALERT_EMAIL_TO / RESEND_API_KEY are not set — if WhatsApp stops '
+      + 'working, nobody is emailed. Problems are only written to the log.');
   }
 
   return { fatal, warnings };

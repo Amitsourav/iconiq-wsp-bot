@@ -35,6 +35,14 @@
   nav button:hover { background: var(--panel-2); color: var(--text); }
   nav button.on { background: var(--panel-2); color: var(--text); font-weight: 600; }
   main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+  /* Shown on every tab, because the one that matters is the tab nobody is on.
+     From 15 to 21 Nov 2026 the bot was deaf and then unlinked for six days. */
+  .wa-banner {
+    margin: 12px 16px 0; padding: 14px 16px; border-radius: var(--radius);
+    background: var(--danger); color: #fff; font-weight: 600; font-size: 15px;
+    cursor: pointer;
+  }
+  .wa-banner small { display: block; font-weight: 400; opacity: .9; margin-top: 4px; }
   .card {
     background: var(--panel); border: 1px solid var(--line);
     border-radius: var(--radius); padding: 18px; margin-bottom: 16px;
@@ -121,6 +129,7 @@
       <button class="btn" onclick="logout()">Sign out</button>
     </div>
   </header>
+  <div id="waBanner" class="wa-banner" hidden></div>
   <main id="view"></main>
 </div>
 
@@ -274,6 +283,25 @@ const WA_LABEL = {
   logged_out: ['Logged out', 'bad']
 };
 
+const WA_BANNER = {
+  logged_out: ['WhatsApp NOT linked — customer messages are not reaching the CRM',
+    'Click here, press “Link a number again”, then scan the QR with the Iconiq phone.'],
+  awaiting_scan: ['WhatsApp NOT linked — scan the QR',
+    'Click here and scan the QR with the Iconiq phone: WhatsApp → Settings → Linked devices → Link a device.'],
+  disconnected: ['WhatsApp disconnected — trying to reconnect',
+    'If this stays for more than a few minutes, check the Iconiq phone has internet.']
+};
+
+/** The red banner across the top of every tab when WhatsApp is not working. */
+function renderBanner(w) {
+  const el = $('#waBanner');
+  const entry = WA_BANNER[w.state];
+  if (!entry) { el.hidden = true; return; }
+  el.innerHTML = esc(entry[0]) + '<small>' + esc(entry[1]) + '</small>';
+  el.hidden = false;
+  el.onclick = () => document.querySelector('nav button[data-tab="connection"]').click();
+}
+
 async function refreshStatus() {
   try {
     const s = await api('/status');
@@ -281,6 +309,7 @@ async function refreshStatus() {
     $('#waPill').className = 'pill ' + cls;
     $('#waPill').innerHTML = '<span class="dot"></span> ' + esc(text);
     window.status_ = s;
+    renderBanner(s.whatsapp);
     if (tab === 'connection') render();
     return s;
   } catch { return null; }

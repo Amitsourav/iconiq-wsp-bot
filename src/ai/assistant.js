@@ -168,6 +168,16 @@ const PREVIOUS_DM_DETAILS_REQUEST = `Please share:
  */
 const DM_CLOSING = 'Thanks for sharing your details. Our team will get in touch with you.';
 
+/**
+ * Asked once, only when WhatsApp has hidden the customer's number.
+ *
+ * Some chats arrive addressed by a LID and nothing else, and without a number
+ * there is no CRM lead — the customer talks to the bot, gets good answers, and
+ * is never followed up. Two were stuck like this in Nov 2026, one of them
+ * asking about a 30 kW inverter. Their reply is read for the number.
+ */
+const DM_ASK_PHONE = 'Please share your mobile number so our team can contact you.';
+
 /** chatId -> [{role, content}, ...], oldest first. */
 const histories = new Map();
 
@@ -256,5 +266,6 @@ module.exports = {
   DM_ENQUIRY_VALUES,
   DM_MENU_REMINDER,
   PREVIOUS_DM_DETAILS_REQUEST,
+  DM_ASK_PHONE,
   DM_CLOSING
 };

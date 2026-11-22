@@ -20,6 +20,7 @@ const { DailyScheduler } = require('./pipeline/scheduler');
 const { buildMorningMessage } = require('./pipeline/digest');
 const { syncDmConversations } = require('./pipeline/dmSync');
 const { createServer } = require('./api/server');
+const { HealthWatch } = require('./alerts');
 
 async function main() {
   const { fatal, warnings } = validate();
@@ -229,6 +230,11 @@ async function main() {
     logger.warn('The admin panel is still running.');
   });
 
+  // Emails someone if WhatsApp logs out, waits for a QR, goes offline or stops
+  // delivering, or if the AI key dies. See src/alerts.js.
+  const health = new HealthWatch({ whatsapp });
+  health.start();
+
   let shuttingDown = false;
   const shutdown = async (signal) => {
     if (shuttingDown) return;
@@ -236,6 +242,7 @@ async function main() {
     logger.info(`${signal} — shutting down`);
 
     worker.stop();
+    health.stop();
     digest.stop();
     dmSync.stop();
     await whatsapp.disconnect().catch(() => {});

@@ -741,6 +741,18 @@ const dmMessages = {
     return get().prepare('SELECT * FROM dm_messages WHERE id = ?').get(id) || null;
   },
 
+  /**
+   * When a customer last wrote to us, as epoch milliseconds, or null.
+   * Only real customer chats count — our own messages say nothing about
+   * whether WhatsApp is delivering to us.
+   */
+  lastCustomerMessageAt() {
+    const row = get().prepare(`
+      SELECT MAX(created_at) AS t FROM dm_messages WHERE direction = 'in'
+    `).get();
+    return row?.t ? Date.parse(`${row.t.replace(' ', 'T')}Z`) : null;
+  },
+
   /** Distinct chats that have at least one message not yet synced to the CRM. */
   chatsWithUnsynced() {
     return get().prepare(`
