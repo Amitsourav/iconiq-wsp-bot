@@ -121,7 +121,7 @@ describe('syncDmConversations', () => {
     const crm = fakeCrm();
     const result = await syncDmConversations(crm);
 
-    assert.deepEqual(result, { synced: 1, failed: 0 });
+    assert.deepEqual(result, { synced: 1, failed: 0, waiting: 0 });
     assert.equal(crm.calls.createLead.length, 1);
     assert.equal(crm.calls.createLead[0].full_name, 'Rohit Verma');
     assert.equal(crm.calls.createLead[0].phone, PHONE);
@@ -184,7 +184,7 @@ describe('syncDmConversations', () => {
 
     const result = await syncDmConversations(crm);
 
-    assert.deepEqual(result, { synced: 0, failed: 1 });
+    assert.deepEqual(result, { synced: 0, failed: 1, waiting: 0 });
     assert.equal(crm.calls.createLead.length, 0);
     assert.equal(crm.calls.addLeadMessage.length, 0);
 
@@ -210,7 +210,7 @@ describe('syncDmConversations', () => {
 
     const result = await syncDmConversations(crm);
 
-    assert.deepEqual(result, { synced: 1, failed: 0 });
+    assert.deepEqual(result, { synced: 1, failed: 0, waiting: 0 });
     assert.equal(attempt, 1);
     assert.equal(crm.calls.addLeadMessage[0].leadId, 'dup-lead');
     assert.equal(repo.dmThreads.byChatId(CHAT).crm_lead_id, 'dup-lead');
@@ -224,17 +224,31 @@ describe('syncDmConversations', () => {
 
     const result = await syncDmConversations(crm);
 
-    assert.deepEqual(result, { synced: 0, failed: 1 });
+    assert.deepEqual(result, { synced: 0, failed: 1, waiting: 0 });
     const thread = repo.dmThreads.byChatId(CHAT);
     assert.equal(thread.status, 'failed');
     assert.match(thread.last_error, /CRM unreachable/);
     assert.equal(repo.dmMessages.chatsWithUnsynced().length, 1);
   });
 
+  test('a chat with no phone number is waiting, not failed', async () => {
+    // A hidden-number (LID) chat: WhatsApp has not told us who it is yet.
+    repo.dmThreads.upsert('10000000000001@lid', null);
+    repo.dmMessages.create({ waMessageId: 'lid-1', chatId: '10000000000001@lid', direction: 'in', body: 'datasheet?' });
+    const crm = fakeCrm({});
+
+    const result = await syncDmConversations(crm);
+
+    assert.deepEqual(result, { synced: 0, failed: 0, waiting: 1 });
+    assert.equal(crm.calls.createLead.length, 0);
+    // Kept unsynced, so it goes to the CRM the moment a number turns up.
+    assert.equal(repo.dmMessages.chatsWithUnsynced().length, 1);
+  });
+
   test('does nothing when the CRM is not configured', async () => {
     seedMessages(CHAT, [['in', 'hello']]);
     const result = await syncDmConversations({ configured: false });
-    assert.deepEqual(result, { synced: 0, failed: 0 });
+    assert.deepEqual(result, { synced: 0, failed: 0, waiting: 0 });
     assert.equal(repo.dmMessages.chatsWithUnsynced().length, 1);
   });
 
@@ -246,7 +260,66 @@ describe('syncDmConversations', () => {
     const crm = fakeCrm();
     const result = await syncDmConversations(crm);
 
-    assert.deepEqual(result, { synced: 2, failed: 0 });
+    assert.deepEqual(result, { synced: 2, failed: 0, waiting: 0 });
     assert.equal(crm.calls.createLead.length, 2);
+  });
+});
+
+describe('migration 010', () => {
+  test('removes Status posts and clears a failure that is over', () => {
+    const { MIGRATIONS } = require('../src/db/schema');
+    const sql = MIGRATIONS.find((m) => m.name === '010_drop_status_broadcast_and_stale_failures').sql;
+
+    repo.dmThreads.upsert('status@broadcast', null);
+    repo.dmMessages.create({ waMessageId: 's1', chatId: 'status@broadcast', direction: 'in', body: 'cricket!' });
+    // Failed during an old CRM outage, has its lead, nothing left to send.
+    repo.dmThreads.upsert('10000000000002@lid', '+919800000002');
+    repo.dmThreads.setCrmLead('10000000000002@lid', 'lead-old-failure');
+    repo.dmThreads.markFailed('10000000000002@lid', 'GET /leads/search → 500');
+    // Still failing for real: unsynced messages remain.
+    seedMessages(CHAT, [['in', 'hello']]);
+    repo.dmThreads.setCrmLead(CHAT, 'lead-x');
+    repo.dmThreads.markFailed(CHAT, 'CRM down');
+
+    db.get().exec(sql);
+
+    assert.equal(repo.dmThreads.byChatId('status@broadcast'), undefined);
+    assert.equal(db.get().prepare("SELECT COUNT(*) n FROM dm_messages WHERE chat_id='status@broadcast'").get().n, 0);
+    assert.equal(repo.dmThreads.byChatId('10000000000002@lid').status, 'synced');
+    assert.equal(repo.dmThreads.byChatId(CHAT).status, 'failed');
+  });
+});
+
+describe('one lead per chat, whoever gets there first', () => {
+  test('the retry worker and the nightly sync running at once create one lead', async () => {
+    const { Orchestrator } = require('../src/pipeline/orchestrator');
+    const { RetryWorker } = require('../src/pipeline/worker');
+
+    seedMessages(CHAT, [['in', 'Hi, I need a 5kW inverter']]);
+
+    // A slow create, so the second caller arrives while the first is in flight —
+    // what happened on 15 Nov 2026.
+    let created = 0;
+    const crm = fakeCrm({
+      createLead: async () => {
+        created += 1;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return { lead: { id: `lead-${created}` }, deferred: {}, dropped: [] };
+      }
+    });
+    const orchestrator = new Orchestrator({ crm, whatsapp: {} });
+    const worker = new RetryWorker({ orchestrator });
+
+    const [, result] = await Promise.all([
+      worker.retryDmLeads(),
+      syncDmConversations(crm, {
+        lock: (chatId, work) => orchestrator.withChatLock(chatId, work)
+      })
+    ]);
+
+    assert.equal(created, 1);
+    assert.equal(repo.dmThreads.byChatId(CHAT).crm_lead_id, 'lead-1');
+    assert.equal(result.synced, 1);
+    assert.equal(crm.calls.addLeadMessage[0].leadId, 'lead-1');
   });
 });

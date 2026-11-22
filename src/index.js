@@ -8,6 +8,8 @@
  */
 const { config, validate } = require('./config');
 const logger = require('./logger');
+// Before anything loads Baileys, so libsignal's console output is caught from the start.
+require('./whatsapp/signalNoise').install();
 const db = require('./db');
 const repo = require('./db/repositories');
 const { CrmClient } = require('./crm/client');
@@ -209,7 +211,10 @@ async function main() {
   // customer, carrying their name, phone, and the transcript since the last
   // sync — so the team can see what a chat covered without opening WhatsApp.
   // Exposed via jobs too, so the panel can trigger it on demand.
-  jobs['dm-crm-sync'] = () => syncDmConversations(crm, { selfPhone: whatsapp.selfPhone });
+  jobs['dm-crm-sync'] = () => syncDmConversations(crm, {
+    selfPhone: whatsapp.selfPhone,
+    lock: (chatId, work) => orchestrator.withChatLock(chatId, work)
+  });
 
   const dmSync = new DailyScheduler({
     name: 'dm-crm-sync',

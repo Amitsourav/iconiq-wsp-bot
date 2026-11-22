@@ -138,7 +138,15 @@ class RetryWorker {
       repo.dmThreads.recordAttempt(thread.chat_id);
 
       try {
-        const { status, leadId } = await ensureCrmLead(this.orchestrator.crm, thread);
+        // Under the chat's lock, and re-read inside it: a message from this
+        // customer may be creating the lead right now. See withChatLock().
+        const lock = this.orchestrator.withChatLock?.bind(this.orchestrator)
+          || ((_, work) => work());
+        const { status, leadId } = await lock(thread.chat_id, async () => {
+          const fresh = repo.dmThreads.byChatId(thread.chat_id);
+          if (!fresh || fresh.crm_lead_id) return { status: 'already', leadId: fresh?.crm_lead_id };
+          return ensureCrmLead(this.orchestrator.crm, fresh);
+        });
         if (status === 'ok') {
           logger.info(`DM lead created on retry: ${thread.phone} → ${leadId}`);
         }

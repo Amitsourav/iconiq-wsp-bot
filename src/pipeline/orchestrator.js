@@ -139,6 +139,25 @@ class Orchestrator {
   }
 
   /**
+   * Run CRM work for one DM chat, after any CRM work already queued for it.
+   *
+   * Everything that can create a DM chat's lead must go through this one lock:
+   * the live message path, the retry worker and the nightly sync. On 15 Nov
+   * 2026 two "create lead" requests for one customer went out at the same
+   * moment — each saw no lead yet, so each made one — and the CRM answered one
+   * of them with a 500. Re-read the thread inside `work`: by the time it runs,
+   * whoever went first may have created the lead.
+   *
+   * @param {string} chatId
+   * @param {() => Promise<T>} work
+   * @returns {Promise<T>}
+   * @template T
+   */
+  withChatLock(chatId, work) {
+    return this.serialise(`crm:${chatId}`, work);
+  }
+
+  /**
    * Wait for everything queued to finish.
    *
    * The CRM half of handling a message runs on its own queue rather than being

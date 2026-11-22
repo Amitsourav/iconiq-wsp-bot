@@ -83,6 +83,15 @@ function normalise(raw) {
   if (!raw?.key?.id) return null;
 
   const remoteJid = raw.key.remoteJid || '';
+
+  // Status updates, broadcast lists and channels are not conversations with us.
+  // WhatsApp delivers Status posts as if from a chat called "status@broadcast",
+  // and since nothing stopped them every contact's Status was being filed as
+  // one long "customer" thread with no phone number — 111 posts of cricket
+  // invitations and the like, retried by the nightly sync and counted as a
+  // failure every night. Nobody can reply to them, so there is nothing to keep.
+  if (remoteJid.endsWith('@broadcast') || remoteJid.endsWith('@newsletter')) return null;
+
   const isGroup = remoteJid.endsWith('@g.us');
 
   // In a group the actual sender is `participant`; remoteJid is the group.

@@ -406,6 +406,28 @@ const MIGRATIONS = [
       );
     `
   }
+  ,{
+    name: '010_drop_status_broadcast_and_stale_failures',
+    sql: `
+      -- WhatsApp Status posts were filed as a direct chat called
+      -- "status@broadcast": every contact's Status, as one thread with no phone
+      -- number, counted as a failed sync every night. They are now ignored on
+      -- arrival (whatsapp/messages.js); this removes what was already filed.
+      -- They were never a conversation with us, so nothing is lost.
+      DELETE FROM dm_messages WHERE chat_id LIKE '%@broadcast' OR chat_id LIKE '%@newsletter';
+      DELETE FROM dm_threads  WHERE chat_id LIKE '%@broadcast' OR chat_id LIKE '%@newsletter';
+
+      -- A chat marked failed by a CRM outage that later got its lead kept the
+      -- label for good, because only chats with unsynced messages are retried
+      -- (one chat hit a CRM 500 on 16 Sep 2026 and got its lead later). With
+      -- a lead and nothing left to send, the failure is over.
+      UPDATE dm_threads SET status = 'synced', last_error = NULL
+       WHERE status = 'failed'
+         AND crm_lead_id IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM dm_messages m
+                          WHERE m.chat_id = dm_threads.chat_id AND m.synced = 0);
+    `
+  }
 ];
 
 module.exports = { MIGRATIONS };

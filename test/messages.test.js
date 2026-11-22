@@ -171,3 +171,16 @@ describe('LID addressing (regression — found in live testing)', () => {
     assert.deepEqual(m.pendingLids, []);
   });
 });
+
+test('Status posts, broadcast lists and channels are not conversations', () => {
+  const raw = (remoteJid) => ({
+    key: { id: 'X1', remoteJid, fromMe: false, participant: '919876543210@s.whatsapp.net' },
+    message: { conversation: 'Weekend cricket match — everyone welcome!' },
+    messageTimestamp: 1795323358
+  });
+  assert.strictEqual(messages.normalise(raw('status@broadcast')), null);
+  assert.strictEqual(messages.normalise(raw('1234567890@broadcast')), null);
+  assert.strictEqual(messages.normalise(raw('120363000000000000@newsletter')), null);
+  // An ordinary direct message still comes through.
+  assert.ok(messages.normalise(raw('919876543210@s.whatsapp.net')));
+});

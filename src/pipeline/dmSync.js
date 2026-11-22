@@ -188,52 +188,75 @@ async function pushDmMessages(crm, thread, { selfPhone } = {}) {
 }
 
 /**
+ * Sync one chat. Reads the thread fresh, since it may have changed while this
+ * waited for the chat's lock.
+ * @returns {Promise<'synced'|'waiting'|'failed'|'skipped'>}
+ * @private
+ */
+async function syncOneChat(crm, chatId, selfPhone) {
+  // The thread row is created at capture time (orchestrator.handleDirect), but
+  // guard anyway rather than crash a whole run over one unexpected gap.
+  const thread = repo.dmThreads.byChatId(chatId) || repo.dmThreads.upsert(chatId, null);
+  const rows = repo.dmMessages.unsyncedForChat(chatId);
+  if (!rows.length) return 'skipped';
+
+  const name = thread.name || extractName(rows);
+  if (name && !thread.name) repo.dmThreads.setName(chatId, name);
+
+  try {
+    const { status } = await ensureCrmLead(crm, thread, name);
+
+    // No number to match on: the lead is made when one arrives. The messages
+    // stay unsynced and are picked up then.
+    if (status === 'no_phone') return 'waiting';
+    // Held for a human (ambiguous match). Same: retried next cycle.
+    if (status !== 'ok') return 'failed';
+
+    await pushDmMessages(crm, repo.dmThreads.byChatId(chatId), { selfPhone });
+    repo.dmThreads.markSynced(chatId);
+    return 'synced';
+  } catch (error) {
+    logger.warn(`DM→CRM sync failed for ${chatId}: ${error.message}`);
+    repo.dmThreads.markFailed(chatId, error.message);
+    return 'failed';
+  }
+}
+
+/**
  * Sync every DM chat that has unsynced messages.
  * @param {import('../crm/client').CrmClient} crm
- * @returns {Promise<{ synced: number, failed: number }>}
+ * A chat with no phone number is reported as waiting, not failed. Nothing went
+ * wrong — WhatsApp hid the number and the lead is created as soon as one
+ * arrives — and counting it as a failure every night made the report say
+ * "3 failed" for weeks, which taught everyone to ignore it.
+ *
+ * @returns {Promise<{ synced: number, failed: number, waiting: number }>}
  */
-async function syncDmConversations(crm, { selfPhone } = {}) {
+async function syncDmConversations(crm, { selfPhone, lock = (_, work) => work() } = {}) {
   if (!crm.configured) {
     logger.warn('CRM not configured — DM conversations are captured but not synced');
-    return { synced: 0, failed: 0 };
+    return { synced: 0, failed: 0, waiting: 0 };
   }
 
   const chatIds = repo.dmMessages.chatsWithUnsynced();
   let synced = 0;
   let failed = 0;
+  let waiting = 0;
 
   for (const chatId of chatIds) {
-    // The thread row is created at capture time (orchestrator.handleDirect), but
-    // guard anyway rather than crash a whole run over one unexpected gap.
-    const thread = repo.dmThreads.byChatId(chatId) || repo.dmThreads.upsert(chatId, null);
-    const rows = repo.dmMessages.unsyncedForChat(chatId);
-    if (!rows.length) continue;
-
-    const name = thread.name || extractName(rows);
-    if (name && !thread.name) repo.dmThreads.setName(chatId, name);
-
-    try {
-      const { status } = await ensureCrmLead(crm, thread, name);
-
-      // Held for a human, or no number to match on. Either way the messages stay
-      // unsynced and are picked up again next cycle.
-      if (status !== 'ok') {
-        failed += 1;
-        continue;
-      }
-
-      await pushDmMessages(crm, repo.dmThreads.byChatId(chatId), { selfPhone });
-      repo.dmThreads.markSynced(chatId);
-      synced += 1;
-    } catch (error) {
-      logger.warn(`DM→CRM sync failed for ${chatId}: ${error.message}`);
-      repo.dmThreads.markFailed(chatId, error.message);
-      failed += 1;
-    }
+    // Under the same per-chat lock as live messages (orchestrator.withChatLock),
+    // so the nightly run can never create a lead for a customer whose message
+    // is creating one at the same moment.
+    const outcome = await lock(chatId, () => syncOneChat(crm, chatId, selfPhone));
+    if (outcome === 'synced') synced += 1;
+    else if (outcome === 'waiting') waiting += 1;
+    else if (outcome === 'failed') failed += 1;
   }
 
-  logger.info(`DM→CRM sync: ${synced} conversation(s) synced, ${failed} failed`);
-  return { synced, failed };
+  const note = waiting ? `, ${waiting} waiting for a phone number (see "Needs attention")` : '';
+  const line = `DM→CRM sync: ${synced} conversation(s) synced, ${failed} failed${note}`;
+  if (failed) logger.warn(line); else logger.info(line);
+  return { synced, failed, waiting };
 }
 
 module.exports = {
