@@ -97,6 +97,12 @@ const config = {
      * minutes until morning would be churn with nothing to gain — each
      * reconnect costs a re-handshake and a burst of session renegotiation.
      */
+    /**
+     * Link by an 8-digit pairing code for this number instead of a QR.
+     * Digits only, with country code. Unset means QR.
+     */
+    pairingPhone: process.env.WA_PAIRING_PHONE || undefined,
+
     activeFromHour: int(process.env.WA_ACTIVE_FROM_HOUR, 8),
     activeUntilHour: int(process.env.WA_ACTIVE_UNTIL_HOUR, 22),
 
@@ -184,6 +190,11 @@ const config = {
    */
   dmSync: {
     at: process.env.DM_CRM_SYNC_AT || '22:30'
+  },
+
+  /** When yesterday's summary is posted into groups with replies on. */
+  dailySummary: {
+    at: process.env.DAILY_SUMMARY_AT || '09:00'
   },
 
   /**

@@ -196,7 +196,7 @@ async function main() {
 
   const digest = new DailyScheduler({
     name: 'daily-summary',
-    at: process.env.DAILY_SUMMARY_AT || '09:00',
+    at: config.dailySummary.at,
     run: jobs['morning-summary']
   });
   digest.start();
@@ -225,7 +225,7 @@ async function main() {
   dmSync.start();
 
   // WhatsApp last, and non-blocking: if it fails, the panel is still up to fix it.
-  whatsapp.connect({ pairingPhone: process.env.WA_PAIRING_PHONE }).catch((error) => {
+  whatsapp.connect({ pairingPhone: config.whatsapp.pairingPhone }).catch((error) => {
     logger.error(`WhatsApp failed to start: ${error.message}`);
     logger.warn('The admin panel is still running.');
   });
