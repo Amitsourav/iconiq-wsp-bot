@@ -731,9 +731,9 @@ const dmThreads = {
 const dmMessages = {
   create(row) {
     const result = get().prepare(`
-      INSERT OR IGNORE INTO dm_messages (wa_message_id, chat_id, direction, body)
-      VALUES (@waMessageId, @chatId, @direction, @body)
-    `).run(row);
+      INSERT OR IGNORE INTO dm_messages (wa_message_id, chat_id, direction, body, author)
+      VALUES (@waMessageId, @chatId, @direction, @body, @author)
+    `).run({ author: null, ...row });
     return result.changes === 0 ? null : this.byId(result.lastInsertRowid);
   },
 

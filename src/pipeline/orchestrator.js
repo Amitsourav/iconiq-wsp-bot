@@ -26,6 +26,7 @@ const commands = require('./commands');
 const { buildMyLeads } = require('./digest');
 const { ensureCrmLead, pushDmMessages } = require('./dmSync');
 const { describe } = require('../whatsapp/messages');
+const enquiryType = require('./enquiryType');
 const { BankHandler } = require('./bank');
 const { DuplicateLeadError, CrmClient } = require('../crm/client');
 const repo = require('../db/repositories');
@@ -83,15 +84,14 @@ function isDetailsRequest(body) {
     || body === assistant.PREVIOUS_DM_DETAILS_REQUEST;
 }
 
-/** Which option's details the bot sent in this conversation, if any. */
-function enquiryOption(rows) {
-  for (const row of rows) {
-    if (row.direction !== 'out') continue;
-    for (const [option, body] of Object.entries(assistant.DM_DETAILS)) {
-      if (row.body === body) return Number(option);
-    }
-  }
-  return null;
+/**
+ * Which option this conversation is, from a closed vocabulary only: the bot's
+ * own details request, Meta AI's, or the customer's whole-message reply to
+ * the menu. See pipeline/enquiryType.js.
+ * @returns {{ option: 1|2, source: string }|null}
+ */
+function enquiryOf(rows) {
+  return enquiryType.classify(rows, { scriptDetails: assistant.DM_DETAILS });
 }
 
 class Orchestrator {
@@ -947,6 +947,7 @@ class Orchestrator {
         // up with the conversation.
         await this.syncDmToCrm(message.chatId);
         await this.noteDmEnquiryType(message.chatId);
+        await this.noteDmPartnerType(message.chatId);
         await this.captureDmFields(message.chatId);
       }).catch((error) => logger.error(
         `CRM work failed for ${message.chatId}: ${error.message}`));
@@ -975,10 +976,14 @@ class Orchestrator {
         if (!text) return this.noteUnreadable(message, rawMessage);
 
         repo.dmThreads.upsert(message.chatId, phoneUtil.fromJidInternational(message.chatId));
-        if (!this.recordDmMessage(message.chatId, 'out', text, message.id)) return;
+        if (!this.recordDmMessage(message.chatId, 'out', text, message.id, 'business')) return;
 
-        this.serialise(`crm:${message.chatId}`, () => this.syncDmToCrm(message.chatId))
-          .catch((error) => logger.error(`CRM work failed for ${message.chatId}: ${error.message}`));
+        // Meta AI's details request is often what decides B2B or B2C, and it
+        // arrives after the customer's message, so it is checked here too.
+        this.serialise(`crm:${message.chatId}`, async () => {
+          await this.syncDmToCrm(message.chatId);
+          await this.noteDmEnquiryType(message.chatId);
+        }).catch((error) => logger.error(`CRM work failed for ${message.chatId}: ${error.message}`));
       } catch (error) {
         logger.error(`Recording our own message ${message?.id} failed: ${error.message}`);
       }
@@ -1328,32 +1333,122 @@ class Orchestrator {
     if (!thread?.crm_lead_id) return;
 
     const done = repo.dmThreads.captured(chatId);
-    if ('enquiry_type' in done && done.enquiry_type_remark) return;
+    const guessed = done.enquiry_type_source === 'ai';
+    if ('enquiry_type' in done && done.enquiry_type_remark && !guessed) return;
 
-    const option = enquiryOption(repo.dmMessages.recentForChat(chatId, 200));
-    if (!option) return;
+    const found = enquiryOf(repo.dmMessages.recentForChat(chatId, 200));
+    if (!found) return;
 
-    const label = assistant.DM_ENQUIRY_TYPES[option];
+    const value = assistant.DM_ENQUIRY_VALUES[found.option];
+    const label = assistant.DM_ENQUIRY_TYPES[found.option];
 
     try {
-      if (!('enquiry_type' in done)) {
-        const value = assistant.DM_ENQUIRY_VALUES[option];
+      // The AI's guess was right: nothing to change, but it is no longer a guess.
+      if (guessed && done.enquiry_type === value) {
+        repo.dmThreads.setCaptured(chatId, { enquiry_type_source: found.source });
+        return;
+      }
+
+      // A clear answer always beats a guess, even one already in the CRM.
+      const correcting = guessed && done.enquiry_type !== value;
+
+      if (!('enquiry_type' in done) || correcting) {
         await this.crm.updateLead(thread.crm_lead_id, { enquiry_type: value });
         // Kept with the captured fields so a lead deleted in the CRM — which
         // clears them — gets it again on its replacement.
-        repo.dmThreads.setCaptured(chatId, { enquiry_type: value });
+        repo.dmThreads.setCaptured(chatId, { enquiry_type: value, enquiry_type_source: found.source });
       }
 
-      if (!done.enquiry_type_remark) {
-        await this.crm.addRemark(thread.crm_lead_id, `Enquiry type: ${label}`,
-          `enquiry:${chatId}`);
+      if (!done.enquiry_type_remark || correcting) {
+        const text = correcting
+          ? `Enquiry type corrected: ${label} (the customer's answer replaced the AI's guess)`
+          : `Enquiry type: ${label}`;
+        await this.crm.addRemark(thread.crm_lead_id, text,
+          correcting ? `enquiry-corrected:${chatId}` : `enquiry:${chatId}`);
         repo.dmThreads.setCaptured(chatId, { enquiry_type_remark: true });
       }
 
-      logger.info(`DM lead ${thread.phone || chatId}: enquiry type ${label}`);
+      logger.info(`DM lead ${thread.phone || chatId}: enquiry type ${label} (${found.source})`);
     } catch (error) {
       if (this.forgetDeletedLead(chatId, error)) return;
       logger.warn(`Enquiry type not sent to the CRM yet for ${chatId}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Fall back to the AI's judgement of B2B or B2C, when nothing in the
+   * conversation says it plainly.
+   *
+   * The one structured field the bot sets from a judgement rather than a
+   * label or a fixed answer — agreed by the business on 22 Nov 2026, because
+   * with Meta's AI answering there is no poll to read. So it is always marked
+   * as a guess: the remark says so and gives the reason, and the first clear
+   * answer replaces it (noteDmEnquiryType).
+   *
+   * Only once the customer has written at least twice: a guess from "hi" is
+   * not a guess.
+   *
+   * @private
+   */
+  async applyEnquiryGuess(chatId, thread, guess) {
+    if (!guess) return;
+    const done = repo.dmThreads.captured(chatId);
+    if ('enquiry_type' in done) return;
+
+    const rows = repo.dmMessages.recentForChat(chatId, 200);
+    if (enquiryOf(rows)) return; // a clear answer exists; noteDmEnquiryType handles it
+    if (rows.filter((r) => r.direction === 'in').length < 2) return;
+
+    const option = Number(Object.keys(assistant.DM_ENQUIRY_VALUES)
+      .find((k) => assistant.DM_ENQUIRY_VALUES[k] === guess.value));
+    const label = assistant.DM_ENQUIRY_TYPES[option];
+
+    await this.crm.updateLead(thread.crm_lead_id, { enquiry_type: guess.value });
+    repo.dmThreads.setCaptured(chatId, { enquiry_type: guess.value, enquiry_type_source: 'ai' });
+    await this.crm.addRemark(thread.crm_lead_id,
+      `Enquiry type (AI-identified, please check): ${label}`
+        + (guess.reason ? `. Why: ${guess.reason}` : ''),
+      `enquiry-ai:${chatId}`);
+    repo.dmThreads.setCaptured(chatId, { enquiry_type_remark: true });
+    logger.info(`DM lead ${thread.phone || chatId}: enquiry type ${label} (AI guess)`);
+  }
+
+  /**
+   * Record whether a partner is an EPC partner, a distributor or a dealer,
+   * from their answer to Meta AI's "Are you an EPC partner or a Distributor?".
+   *
+   * A remark always; the CRM's own partner_type field as well once it exists
+   * (config.crm.partnerTypeField). Read from fixed words only, after the
+   * question, and only when they name exactly one — see enquiryType.partnerType.
+   *
+   * @private
+   */
+  async noteDmPartnerType(chatId) {
+    if (!this.crm.configured) return;
+    const thread = repo.dmThreads.byChatId(chatId);
+    if (!thread?.crm_lead_id) return;
+
+    const done = repo.dmThreads.captured(chatId);
+    const wantField = config.crm.partnerTypeField && !('partner_type' in done);
+    if (done.partner_type_remark && !wantField) return;
+
+    const type = enquiryType.partnerType(repo.dmMessages.recentForChat(chatId, 200));
+    if (!type) return;
+
+    try {
+      if (wantField) {
+        await this.crm.updateLead(thread.crm_lead_id, { partner_type: type });
+        repo.dmThreads.setCaptured(chatId, { partner_type: type });
+      }
+      if (!done.partner_type_remark) {
+        await this.crm.addRemark(thread.crm_lead_id,
+          `Partner type: ${enquiryType.PARTNER_TYPES[type]}`, `partner:${chatId}`);
+        repo.dmThreads.setCaptured(chatId, { partner_type_remark: true });
+      }
+      logger.info(`DM lead ${thread.phone || chatId}: partner type ${type}`);
+    } catch (error) {
+      if (this.forgetDeletedLead(chatId, error)) return;
+      logger.warn(`Partner type not sent to the CRM yet for ${chatId}: ${error.message}`);
     }
   }
 
@@ -1372,7 +1467,7 @@ class Orchestrator {
     let updated = 0;
     for (const chatId of repo.dmThreads.withLead()) {
       if ('enquiry_type' in repo.dmThreads.captured(chatId)) continue;
-      if (!enquiryOption(repo.dmMessages.recentForChat(chatId, 200))) continue;
+      if (!enquiryOf(repo.dmMessages.recentForChat(chatId, 200))) continue;
 
       await this.serialise(`crm:${chatId}`, () => this.noteDmEnquiryType(chatId));
       if ('enquiry_type' in repo.dmThreads.captured(chatId)) updated += 1;
@@ -1465,7 +1560,8 @@ class Orchestrator {
         content: row.body
       }));
 
-      const { fields } = await extract.extractFields(history);
+      const { fields, enquiryGuess } = await extract.extractFields(history);
+      await this.applyEnquiryGuess(chatId, thread, enquiryGuess);
 
       const already = repo.dmThreads.captured(chatId);
       const fresh = {};
@@ -1498,10 +1594,10 @@ class Orchestrator {
    * call from a retried/replayed event.
    * @private
    */
-  recordDmMessage(chatId, direction, body, waMessageId) {
+  recordDmMessage(chatId, direction, body, waMessageId, author = direction === 'out' ? 'bot' : null) {
     // Returns null when this id has been stored before, which is how callers
     // tell a new message from a redelivery.
-    return repo.dmMessages.create({ waMessageId, chatId, direction, body });
+    return repo.dmMessages.create({ waMessageId, chatId, direction, body, author });
   }
 
   /**

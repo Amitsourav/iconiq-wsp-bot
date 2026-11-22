@@ -428,6 +428,20 @@ const MIGRATIONS = [
                           WHERE m.chat_id = dm_threads.chat_id AND m.synced = 0);
     `
   }
+  ,{
+    name: '011_dm_message_author',
+    sql: `
+      -- Who wrote our side of a direct chat: 'bot' for the bot's own messages,
+      -- 'business' for anything else sent from the number — Meta's Business AI
+      -- or the team on the phone. NULL on rows from before this existed.
+      --
+      -- B2B / B2C is read from Meta AI's details request (pipeline/enquiryType.js),
+      -- and without this the bot's own old messages — an earlier details request
+      -- that asked for load capacity — read as Meta AI choosing "order" for every
+      -- old lead the startup backfill touched.
+      ALTER TABLE dm_messages ADD COLUMN author TEXT;
+    `
+  }
 ];
 
 module.exports = { MIGRATIONS };

@@ -56,11 +56,15 @@ ${Object.entries(EXTRACTABLE).map(([k, v]) => `- "${k}": ${v}`).join('\n')}
 Absolute rules:
 - Only include a field if the CUSTOMER stated it plainly. Never infer, never assume, never guess.
 - If they were vague ("a big load", "few hours", "maybe solar"), leave the field out. Vague is not a value.
-- Never take a number the BOT said and treat it as the customer's requirement. Product sizes the bot mentioned are not the customer's answer.
+- Never take a number Iconiq said and treat it as the customer's requirement. Product sizes the bot mentioned are not the customer's answer.
 - "I want solar" is a request, NOT solar_present. solar_present is true only if they already HAVE solar installed.
 - Never invent a name. If they did not say their name, leave full_name out.
 - Numbers must be plain numbers: 10, not "10kW".
-- If the customer stated nothing concrete, return {}.`;
+- If the customer stated nothing concrete, return {}.
+
+Separately, you may also return your judgement of what kind of enquiry this is. This is the one place a judgement is allowed, and it is shown to the team as a guess:
+- "enquiry_guess": "channel_partner" if they want to become a dealer, distributor, EPC/installer or reseller of Iconiq products; "personal_order" if they want to buy for their own home, shop, office, factory or site. Leave it out if you cannot tell.
+- "enquiry_reason": one short sentence saying why, quoting what the customer said.`;
 
 /** Strip a code fence if the model wrapped its JSON in one anyway. */
 function stripFence(text) {
@@ -78,11 +82,12 @@ function stripFence(text) {
  * message tries again over the same history.
  *
  * @param {{role: string, content: string}[]} history - the conversation so far
- * @returns {Promise<{ fields: Object, refused: {field: string, value: *, reason: string}[] }>}
+ * @returns {Promise<{ fields: Object, refused: {field: string, value: *, reason: string}[],
+ *   enquiryGuess: { value: string, reason: string }|null }>}
  */
 async function extractFields(history) {
   const transcript = history
-    .map((m) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.content}`)
+    .map((m) => `${m.role === 'user' ? 'Customer' : 'Iconiq'}: ${m.content}`)
     .join('\n');
 
   if (!transcript.trim()) return { fields: {}, refused: [] };
@@ -110,6 +115,16 @@ async function extractFields(history) {
   const fields = {};
   const refused = [];
 
+  // The enquiry guess is not a field and does not go through coerce(): it is
+  // checked against its own two values, and kept apart so it can never be
+  // written as if the customer had stated it.
+  const guess = raw.enquiry_guess;
+  const enquiryGuess = guess === 'channel_partner' || guess === 'personal_order'
+    ? { value: guess, reason: String(raw.enquiry_reason || '').slice(0, 300) }
+    : null;
+  delete raw.enquiry_guess;
+  delete raw.enquiry_reason;
+
   for (const [field, value] of Object.entries(raw)) {
     // A field nobody asked for is not written, whatever the model returns.
     if (!(field in EXTRACTABLE)) {
@@ -135,7 +150,7 @@ async function extractFields(history) {
       + refused.map((r) => `${r.field}=${JSON.stringify(r.value)} (${r.reason})`).join(', '));
   }
 
-  return { fields, refused };
+  return { fields, refused, enquiryGuess };
 }
 
 module.exports = { extractFields, EXTRACTABLE, SYSTEM_PROMPT };

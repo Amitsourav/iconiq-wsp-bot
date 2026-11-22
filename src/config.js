@@ -138,6 +138,9 @@ const config = {
   crm: {
     baseUrl: process.env.CRM_BASE_URL,
     apiKey: process.env.CRM_API_KEY,
+    // Whether the CRM has the partner_type field yet. Until it does, the
+    // partner type is saved as a remark only (docs/CRM-PROMPT-PARTNER-TYPE.md).
+    partnerTypeField: bool(process.env.CRM_PARTNER_TYPE_FIELD, false),
     companyId: process.env.CRM_COMPANY_ID,
     // The profile the API key resolves to. Used to recognise our own writes.
     serviceProfileId: process.env.CRM_SERVICE_PROFILE_ID,

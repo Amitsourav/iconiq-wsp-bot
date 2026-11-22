@@ -109,6 +109,12 @@ label — money, institutions, courses — it matches against fixed vocabularies
 `pipeline/detect.js`. Never widen this into guessing at prose: a missed lead is
 visible, corrupted data is not.
 
+One agreed exception (22 Nov 2026): a DM's `enquiry_type` (B2B / B2C) falls back
+to the AI's judgement when nothing in the chat says it plainly, because Meta's
+Business AI now answers customers and there is no poll to read. It is always
+marked as a guess in a remark, needs two customer messages, and is replaced by
+the first clear answer (`pipeline/enquiryType.js`). Don't extend it to other fields.
+
 **Nothing is ever dropped.** A message that produces no lead and no update goes to
 `skipped_messages` with a reason. Noise is filtered from the CRM but still recorded
 here, so the noise list can be corrected against real usage rather than argued

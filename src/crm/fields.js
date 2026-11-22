@@ -34,7 +34,11 @@ const ENERGY_FIELDS = [
   // Added for the DM menu, verified live 2026-11-20 on both create and update.
   // enquiry_type is which option they picked; the other two answer the
   // order form's "dealer of another brand?" and "brand name" questions.
-  'enquiry_type', 'is_existing_dealer', 'current_brand'
+  'enquiry_type', 'is_existing_dealer', 'current_brand',
+  // Asked by Meta's Business AI ("EPC partner or a Distributor?"). Requested
+  // from the CRM 22 Nov 2026 (docs/CRM-PROMPT-PARTNER-TYPE.md); only ever sent
+  // once config.crm.partnerTypeField is switched on, after it is live.
+  'partner_type'
 ];
 
 /**
@@ -137,7 +141,8 @@ const LOCKED_LISTS = {
     'pf_paid', 'disbursed'
   ],
   // The CRM answers anything else with a 422.
-  enquiry_type: ['channel_partner', 'personal_order']
+  enquiry_type: ['channel_partner', 'personal_order'],
+  partner_type: ['epc', 'distributor', 'dealer']
 };
 
 /**
