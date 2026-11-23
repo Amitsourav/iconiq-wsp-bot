@@ -13,10 +13,24 @@
 const fs = require('fs');
 const path = require('path');
 const EventEmitter = require('events');
-const {
-  default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers,
-  decryptPollVote, jidNormalizedUser
-} = require('@whiskeysockets/baileys');
+/**
+ * Baileys 7 is an ES module. Node can `require` one from 22.12 onward, and the
+ * Railway build pins only "Node 22", not which 22 — so where require refuses,
+ * it is loaded with import() on connect instead. Either way the same
+ * namespace object comes back, so everything below reads it the same way.
+ */
+let baileys = null;
+try {
+  baileys = require('@whiskeysockets/baileys');
+} catch (error) {
+  if (!['ERR_REQUIRE_ESM', 'ERR_REQUIRE_ASYNC_MODULE'].includes(error.code)) throw error;
+}
+
+/** @returns {Promise<object>} the Baileys module, loading it if require could not */
+async function loadBaileys() {
+  if (!baileys) baileys = await import('@whiskeysockets/baileys');
+  return baileys;
+}
 const crypto = require('crypto');
 const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
@@ -202,6 +216,7 @@ class WhatsAppClient extends EventEmitter {
     this.stopping = false;
     fs.mkdirSync(config.whatsapp.sessionPath, { recursive: true });
 
+    const { default: makeWASocket, useMultiFileAuthState, Browsers } = await loadBaileys();
     const { state, saveCreds } = await useMultiFileAuthState(config.whatsapp.sessionPath);
 
     // `registered` alone is not a reliable answer to "are we already linked?".
@@ -229,7 +244,14 @@ class WhatsAppClient extends EventEmitter {
       // outage that has already ended. Turn it on, restart, let the history
       // land, turn it off again.
       syncFullHistory: config.whatsapp.syncFullHistory,
-      generateHighQualityLinkPreview: false
+      generateHighQualityLinkPreview: false,
+      // When a message will not decrypt ("Bad MAC", "messages into the
+      // future"), start a fresh encryption session with that sender instead
+      // of failing every message from them for good. Baileys 6 had no such
+      // repair: on 22 Nov 2026 a link scanned at 15:26 was failing every
+      // message by 15:29 and stayed that way. The default in 7; stated here
+      // because it is the reason for the upgrade.
+      enableAutoSessionRecreation: true
     });
 
     this.sock.ev.on('creds.update', saveCreds);
@@ -329,7 +351,7 @@ class WhatsAppClient extends EventEmitter {
     if (connection === 'close') {
       this.stopWatchdog();
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const loggedOut = statusCode === DisconnectReason.loggedOut;
+      const loggedOut = statusCode === baileys.DisconnectReason.loggedOut;
 
       this.state = loggedOut ? 'logged_out' : 'disconnected';
       this.emit('status', this.status());
@@ -628,7 +650,8 @@ class WhatsAppClient extends EventEmitter {
         const map = new Map();
         for (const participant of meta.participants || []) {
           const lid = participant.lid || participant.id;
-          const e164 = phoneFromJid(participant.jid || participant.id);
+          // Baileys 7 gives the number as `phoneNumber`; 6 used `jid`.
+          const e164 = phoneFromJid(participant.phoneNumber || participant.jid || participant.id);
           if (lid && e164) map.set(lid, e164);
         }
         entry = { map, at: Date.now() };
@@ -756,8 +779,43 @@ class WhatsAppClient extends EventEmitter {
       }
     }
 
+    // A direct chat addressed only by LID, with no number on the message. The
+    // library keeps a LID -> number map learned from WhatsApp itself, so ask
+    // it before treating the customer as anonymous — without a number there
+    // is no lead, and in Nov 2026 such chats sat unanswered for days.
+    if (!message.isGroup && !message.senderPnJid && String(message.chatId).endsWith('@lid')) {
+      const pnJid = await this.phoneJidForLid(message.chatId);
+      if (pnJid) message.senderPnJid = pnJid;
+    }
+
     // raw is passed through so a reply can quote the message that triggered it.
     this.emit('message', message, raw);
+  }
+
+  /**
+   * The phone JID WhatsApp has told the library a LID belongs to, or null.
+   *
+   * Capped at a few seconds: this sits in front of every reply to that chat,
+   * and a lookup that hangs must cost a missing number, never a slow answer.
+   *
+   * @param {string} lid - e.g. "79955161551055@lid"
+   * @returns {Promise<string|null>}
+   * @private
+   */
+  async phoneJidForLid(lid) {
+    const store = this.sock?.signalRepository?.lidMapping;
+    if (!store?.getPNForLID) return null;
+    try {
+      const pn = await Promise.race([
+        store.getPNForLID(lid),
+        new Promise((resolve) => setTimeout(() => resolve(null), 3000))
+      ]);
+      if (!pn || !String(pn).includes('@s.whatsapp.net')) return null;
+      return (await loadBaileys()).jidNormalizedUser(pn);
+    } catch (error) {
+      logger.warn(`Could not look up the number for ${lid}: ${error.message}`);
+      return null;
+    }
   }
 
   /**
@@ -884,7 +942,7 @@ class WhatsAppClient extends EventEmitter {
       for (const voterJid of voters) {
         let vote;
         try {
-          vote = decryptPollVote(message.pollVote, {
+          vote = baileys.decryptPollVote(message.pollVote, {
             pollCreatorJid, voterJid, pollMsgId: message.pollVote.pollId, pollEncKey: poll.secret
           });
         } catch {
@@ -934,7 +992,7 @@ class WhatsAppClient extends EventEmitter {
 
 /** Distinct, normalised JIDs, dropping blanks. */
 function unique(jids) {
-  return [...new Set(jids.filter(Boolean).map((jid) => jidNormalizedUser(jid)))];
+  return [...new Set(jids.filter(Boolean).map((jid) => baileys.jidNormalizedUser(jid)))];
 }
 
 module.exports = { WhatsAppClient, withinReplayWindow, soundsDeaf };

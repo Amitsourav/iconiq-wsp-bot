@@ -140,8 +140,13 @@ turns the bot into an interruption.
 
 ## Style
 
-- CommonJS (`require`), Node 22. Not ESM — Baileys is CJS and this runs on a server
-  where boring and reliable beats modern.
+- CommonJS (`require`), Node 22. Not ESM — this runs on a server where boring and
+  reliable beats modern. Baileys 7 is itself ESM; `whatsapp/client.js` loads it with
+  `require` where Node allows (22.12+) and `import()` where it does not. Keep all
+  Baileys access in that file.
+- Baileys is pinned to an exact version (7.0.0-rc14). 6.x could not decrypt
+  LID-addressed traffic and a fresh link was failing every message within minutes
+  (22 Nov 2026). Upgrade deliberately, never by range.
 - `async`/`await` only. No callback style, no `.then()` chains.
 - JSDoc on exported functions. Comments explain *why*, never *what*.
 - Errors are logged with enough context to identify the message or lead involved.

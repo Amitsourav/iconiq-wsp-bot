@@ -110,6 +110,11 @@ function pollVoteOf(message) {
   };
 }
 
+/** The first of these that is a phone-number JID, or null. */
+function phoneJidOf(...jids) {
+  return jids.find((jid) => typeof jid === 'string' && jid.endsWith('@s.whatsapp.net')) || null;
+}
+
 /**
  * Normalise a Baileys message into the shape the pipeline works with.
  *
@@ -138,11 +143,16 @@ function normalise(raw) {
   // In a group the actual sender is `participant`; remoteJid is the group.
   //
   // Both may be LIDs rather than phone numbers. When they are, WhatsApp sends
-  // the real number alongside on the key — `participantPn` in a group,
-  // `senderPn` in a direct chat — so prefer those. Without this a DM's LID gets
-  // read as a foreign phone number and the lead is filed under a number that
-  // does not exist.
-  const senderPnJid = (isGroup ? raw.key.participantPn : raw.key.senderPn) || null;
+  // the real number alongside on the key — so prefer it. Without this a DM's
+  // LID gets read as a foreign phone number and the lead is filed under a
+  // number that does not exist.
+  //
+  // Baileys 7 calls it `participantAlt` / `remoteJidAlt`; 6 called it
+  // `participantPn` / `senderPn`. The "Alt" is whichever form the primary is
+  // not, so it is only taken when it really is a phone JID.
+  const senderPnJid = isGroup
+    ? phoneJidOf(raw.key.participantAlt, raw.key.participantPn)
+    : phoneJidOf(raw.key.remoteJidAlt, raw.key.senderPn);
   const senderJid = senderPnJid || (isGroup ? raw.key.participant : remoteJid);
 
   const context = contextOf(raw.message);
